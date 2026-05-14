@@ -971,26 +971,25 @@ function AppContent() {
     try {
       const term = searchId.trim();
       const termUpper = term.toUpperCase();
-      const termLower = term.toLowerCase();
       const termCapitalized = term.charAt(0).toUpperCase() + term.slice(1).toLowerCase();
+
+      const exactEmployeeDoc = await getDocFromServer(doc(db, 'employees', term));
+      const exactEmployeeDocUpper = termUpper !== term ? await getDocFromServer(doc(db, 'employees', termUpper)) : null;
+      if (exactEmployeeDoc.exists() || exactEmployeeDocUpper?.exists()) {
+        const employee = (exactEmployeeDoc.exists() ? exactEmployeeDoc.data() : exactEmployeeDocUpper?.data()) as Employee;
+        setFoundEmployee(employee);
+        setEmployeeSearchResults([]);
+        setErrorMessage('');
+        return;
+      }
       
-      // Search by ID (exact and prefix) in multiple cases
-      const idQueries = [
-        query(collection(db, 'employees'), where('id', '==', term)),
-        query(collection(db, 'employees'), where('id', '==', termUpper)),
-        query(collection(db, 'employees'), where('id', '>=', term), where('id', '<=', term + '\uf8ff'), limit(10)),
-        query(collection(db, 'employees'), where('id', '>=', termUpper), where('id', '<=', termUpper + '\uf8ff'), limit(10))
-      ];
-
-      // Search by Name (prefix) in multiple cases
-      const nameQueries = [
-        query(collection(db, 'employees'), where('fullName', '>=', term), where('fullName', '<=', term + '\uf8ff'), limit(10)),
+      const employeeQueries = [
+        query(collection(db, 'employees'), where('id', '>=', termUpper), where('id', '<=', termUpper + '\uf8ff'), limit(10)),
         query(collection(db, 'employees'), where('fullName', '>=', termUpper), where('fullName', '<=', termUpper + '\uf8ff'), limit(10)),
-        query(collection(db, 'employees'), where('fullName', '>=', termCapitalized), where('fullName', '<=', termCapitalized + '\uf8ff'), limit(10)),
-        query(collection(db, 'employees'), where('fullName', '>=', termLower), where('fullName', '<=', termLower + '\uf8ff'), limit(10))
+        query(collection(db, 'employees'), where('fullName', '>=', termCapitalized), where('fullName', '<=', termCapitalized + '\uf8ff'), limit(10))
       ];
 
-      const snapshots = (await Promise.allSettled([...idQueries, ...nameQueries].map(q => getDocs(q))))
+      const snapshots = (await Promise.allSettled(employeeQueries.map(q => getDocs(q))))
         .filter((result): result is PromiseFulfilledResult<any> => result.status === 'fulfilled')
         .map(result => result.value);
       const allResults = snapshots.flatMap(s => s.docs.map(doc => doc.data() as Employee));
@@ -1031,7 +1030,6 @@ function AppContent() {
     setEppSearchResults([]);
     try {
       const term = searchEppId.trim();
-      const termLower = term.toLowerCase();
       const termUpper = term.toUpperCase();
       
       // 1. Try exact ID match first
@@ -1045,28 +1043,18 @@ function AppContent() {
         exactMatch = { ...exactDocUpper.data(), id: exactDocUpper.id } as EPP;
       }
 
-      // 2. Perform broader database search
-      const searchTerms = [termLower];
-      if (termLower.endsWith('s') && termLower.length > 3) {
-        searchTerms.push(termLower.slice(0, -1));
-      } else if (termLower.length > 3) {
-        searchTerms.push(termLower + 's');
+      if (exactMatch) {
+        setEppSearchResults([exactMatch]);
+        setErrorMessage('');
+        return;
       }
 
-      const allQueries: any[] = [];
-      searchTerms.forEach(t => {
-        const tCapitalized = t.charAt(0).toUpperCase() + t.slice(1).toLowerCase();
-        const tUpper = t.toUpperCase();
-        
-        // Search by ID (prefix)
-        allQueries.push(query(collection(db, 'epp_catalog'), where('id', '>=', t), where('id', '<=', t + '\uf8ff'), limit(20)));
-        allQueries.push(query(collection(db, 'epp_catalog'), where('id', '>=', tUpper), where('id', '<=', tUpper + '\uf8ff'), limit(20)));
-        
-        // Search by Name (prefix)
-        allQueries.push(query(collection(db, 'epp_catalog'), where('name', '>=', t), where('name', '<=', t + '\uf8ff'), limit(20)));
-        allQueries.push(query(collection(db, 'epp_catalog'), where('name', '>=', tCapitalized), where('name', '<=', tCapitalized + '\uf8ff'), limit(20)));
-        allQueries.push(query(collection(db, 'epp_catalog'), where('name', '>=', tUpper), where('name', '<=', tUpper + '\uf8ff'), limit(20)));
-      });
+      const termCapitalized = term.charAt(0).toUpperCase() + term.slice(1).toLowerCase();
+      const allQueries = [
+        query(collection(db, 'epp_catalog'), where('id', '>=', termUpper), where('id', '<=', termUpper + '\uf8ff'), limit(20)),
+        query(collection(db, 'epp_catalog'), where('name', '>=', termUpper), where('name', '<=', termUpper + '\uf8ff'), limit(20)),
+        query(collection(db, 'epp_catalog'), where('name', '>=', termCapitalized), where('name', '<=', termCapitalized + '\uf8ff'), limit(20))
+      ];
       
       const snapshots = (await Promise.allSettled(allQueries.map(q => getDocs(q))))
         .filter((result): result is PromiseFulfilledResult<any> => result.status === 'fulfilled')

@@ -48,6 +48,13 @@ await db.exec(`
     expires_at TEXT NOT NULL,
     FOREIGN KEY (email) REFERENCES local_users(email) ON DELETE CASCADE
   );
+
+  CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection_name);
+  CREATE INDEX IF NOT EXISTS idx_documents_json_id ON documents(collection_name, json_extract(data, '$.id'));
+  CREATE INDEX IF NOT EXISTS idx_documents_employee_name ON documents(collection_name, json_extract(data, '$.fullName'));
+  CREATE INDEX IF NOT EXISTS idx_documents_epp_name ON documents(collection_name, json_extract(data, '$.name'));
+  CREATE INDEX IF NOT EXISTS idx_documents_employee_id ON documents(collection_name, json_extract(data, '$.employeeId'));
+  CREATE INDEX IF NOT EXISTS idx_documents_date ON documents(collection_name, json_extract(data, '$.date'));
 `);
 
 const nowIso = () => new Date().toISOString();
@@ -128,46 +135,37 @@ function normalizeForStorage(value) {
 }
 
 async function listDocuments(collectionName, options = {}) {
-  const rows = await db.all(
-    'SELECT id, data FROM documents WHERE collection_name = ?',
-    collectionName,
-  );
-  let items = rows.map((row) => ({ id: row.id, ...JSON.parse(row.data) }));
   const filters = Array.isArray(options.filters) ? options.filters : [];
+  const whereParts = ['collection_name = ?'];
+  const params = [collectionName];
 
   for (const filter of filters) {
-    items = items.filter((item) => {
-      const value = item[filter.field];
-      if (filter.op === '==') return String(value ?? '') === String(filter.value ?? '');
-      if (filter.op === '>=') return String(value ?? '') >= String(filter.value ?? '');
-      if (filter.op === '<=') return String(value ?? '') <= String(filter.value ?? '');
-      return true;
-    });
+    const field = safeJsonField(filter.field);
+    if (!field || !['==', '>=', '<='].includes(filter.op)) continue;
+    whereParts.push(`COALESCE(json_extract(data, '$.${field}'), '') ${filter.op === '==' ? '=' : filter.op} ?`);
+    params.push(String(filter.value ?? ''));
   }
 
+  let sql = `SELECT id, data FROM documents WHERE ${whereParts.join(' AND ')}`;
   if (options.orderBy?.field) {
-    const { field, direction } = options.orderBy;
-    items.sort((a, b) => {
-      const av = sortableValue(a[field]);
-      const bv = sortableValue(b[field]);
-      const result = av < bv ? -1 : av > bv ? 1 : 0;
-      return direction === 'desc' ? -result : result;
-    });
+    const field = safeJsonField(options.orderBy.field);
+    if (field) {
+      sql += ` ORDER BY COALESCE(json_extract(data, '$.${field}'), '') ${options.orderBy.direction === 'desc' ? 'DESC' : 'ASC'}`;
+    }
   }
 
   if (Number.isFinite(Number(options.limit))) {
-    items = items.slice(0, Number(options.limit));
+    sql += ' LIMIT ?';
+    params.push(Math.max(0, Number(options.limit)));
   }
 
-  return items;
+  const rows = await db.all(sql, params);
+  return rows.map((row) => ({ id: row.id, ...JSON.parse(row.data) }));
 }
 
-function sortableValue(value) {
-  if (typeof value === 'string') {
-    const date = Date.parse(value);
-    return Number.isNaN(date) ? value.toLowerCase() : date;
-  }
-  return value ?? '';
+function safeJsonField(field) {
+  const value = String(field || '');
+  return /^[A-Za-z0-9_]+$/.test(value) ? value : null;
 }
 
 async function ensureBootstrapData() {
