@@ -3421,24 +3421,45 @@ function AppContent() {
                           </button>
                           <button 
                             onClick={async () => {
-                              if (!newEpp.id || !newEpp.name) {
+                              const cleanId = newEpp.id.trim().toUpperCase();
+                              const cleanName = newEpp.name.trim();
+                              const cleanCategory = newEpp.category.trim() || 'Sin categoría';
+                              const cleanSize = newEpp.size.trim().toUpperCase() || extractSize(cleanName) || '0';
+                              const cleanStock = Math.max(0, Number(newEpp.stock) || 0);
+
+                              if (!cleanId || !cleanName) {
                                 alert('ID y Nombre son obligatorios');
                                 return;
                               }
                               try {
-                                // Check if ID already exists
-                                const existingDoc = await getDocs(query(collection(db, 'epp_catalog'), where('id', '==', newEpp.id)));
-                                if (!existingDoc.empty) {
+                                const existingDoc = await getDocFromServer(doc(db, 'epp_catalog', cleanId));
+                                if (existingDoc.exists()) {
                                   alert('Este ID de equipo ya existe');
                                   return;
                                 }
-                                await setDoc(doc(db, 'epp_catalog', newEpp.id), newEpp);
+
+                                const eppToSave: EPP = {
+                                  id: cleanId,
+                                  name: cleanName,
+                                  category: cleanCategory,
+                                  size: cleanSize,
+                                  stock: cleanStock
+                                };
+
+                                await setDoc(doc(db, 'epp_catalog', cleanId), eppToSave);
                                 setIsAddingEpp(false);
                                 setNewEpp({ id: '', name: '', category: '', size: '', stock: 0 });
                                 setFullEppCatalog([]); // Reset fuzzy index
+                                setEppCatalog(prev => {
+                                  const withoutDuplicate = prev.filter(item => item.id !== cleanId);
+                                  return [eppToSave, ...withoutDuplicate];
+                                });
                                 fetchCatalogData();
                               } catch (err) {
                                 console.error("Error adding EPP:", err);
+                                const message = err instanceof Error ? err.message : String(err);
+                                setErrorMessage(`Error al agregar EPP: ${message}`);
+                                alert(`Error al agregar EPP: ${message}`);
                               }
                             }}
                             className="flex-1 bg-indigo-600 text-white font-semibold py-3 px-4 rounded-xl hover:bg-indigo-700 transition-colors"
