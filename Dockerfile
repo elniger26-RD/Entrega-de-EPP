@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim AS deps
+FROM node:22-trixie-slim AS deps
 
 WORKDIR /app
 
@@ -12,7 +12,7 @@ COPY Public ./Public
 COPY SRC ./SRC
 RUN npm run build
 
-FROM node:22-bookworm-slim AS runner
+FROM node:22-trixie-slim AS runner
 
 ENV NODE_ENV=production
 ENV PORT=3001
