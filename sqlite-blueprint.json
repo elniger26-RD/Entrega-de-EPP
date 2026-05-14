@@ -1,0 +1,59 @@
+{
+  "database": "data/epp-control.sqlite",
+  "api": "server/sqlite-server.mjs",
+  "storage": {
+    "documents": {
+      "description": "Tabla generica de documentos para preservar las colecciones usadas por la app.",
+      "primaryKey": ["collection_name", "id"],
+      "columns": {
+        "collection_name": "Nombre logico de coleccion: authorized_users, employees, epp_catalog, deliveries, alerts o test.",
+        "id": "Identificador del documento.",
+        "data": "Documento completo serializado como JSON.",
+        "created_at": "Fecha de creacion del registro SQLite.",
+        "updated_at": "Fecha de ultima actualizacion del registro SQLite."
+      }
+    },
+    "local_users": {
+      "description": "Usuarios locales para inicio de sesion por correo y contrasena.",
+      "primaryKey": ["email"],
+      "columns": {
+        "email": "Correo normalizado en minusculas.",
+        "name": "Nombre visible.",
+        "password_hash": "Hash scrypt de la contrasena.",
+        "salt": "Salt usado por scrypt.",
+        "created_at": "Fecha de creacion.",
+        "updated_at": "Fecha de actualizacion."
+      }
+    },
+    "sessions": {
+      "description": "Sesiones locales usadas por la API.",
+      "primaryKey": ["token"],
+      "columns": {
+        "token": "Token aleatorio enviado como Bearer token.",
+        "email": "Usuario de la sesion.",
+        "created_at": "Fecha de creacion.",
+        "expires_at": "Fecha de expiracion."
+      }
+    }
+  },
+  "collections": {
+    "authorized_users": {
+      "description": "Usuarios permitidos y rol admin/user."
+    },
+    "employees": {
+      "description": "Empleados."
+    },
+    "epp_catalog": {
+      "description": "Catalogo e inventario de EPP."
+    },
+    "deliveries": {
+      "description": "Entregas registradas con firma digital."
+    },
+    "alerts": {
+      "description": "Alertas internas por frecuencia, duplicados o stock."
+    },
+    "test": {
+      "description": "Documento de prueba de conexion."
+    }
+  }
+}

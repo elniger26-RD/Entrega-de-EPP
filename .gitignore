@@ -1,0 +1,12 @@
+node_modules/
+dist/
+data/
+.tools/
+.vite-*.log
+.dev-*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+proyecto-epp-github.zip
+Microsoft.Services.Store.winmd
+*.crdownload

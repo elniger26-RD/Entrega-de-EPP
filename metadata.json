@@ -1,0 +1,5 @@
+{
+  "name": "Control de Entrega EPP",
+  "description": "Sistema de gestión de inventario y entrega de Equipos de Protección Personal con firma digital e histórico.",
+  "requestFramePermissions": ["camera"]
+}

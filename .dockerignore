@@ -1,0 +1,12 @@
+node_modules
+dist
+data
+.tools
+.git
+.dev-*.log
+.vite-*.log
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+npm-debug.log*
+Dockerfile

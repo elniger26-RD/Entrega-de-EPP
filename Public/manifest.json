@@ -1,0 +1,21 @@
+{
+  "name": "Control de EPP - DP World",
+  "short_name": "EPP Control",
+  "description": "Sistema de gestión de inventario y entrega de EPP.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "https://upload.wikimedia.org/wikipedia/commons/c/c5/DP_World_Logo.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "https://upload.wikimedia.org/wikipedia/commons/c/c5/DP_World_Logo.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
