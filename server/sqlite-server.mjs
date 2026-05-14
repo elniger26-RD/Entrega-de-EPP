@@ -288,7 +288,8 @@ function isAdmin(user) {
 
 function canWriteCollection(user, collectionName, method) {
   if (isAdmin(user)) return true;
-  if (method === 'POST' && ['deliveries', 'alerts'].includes(collectionName)) return true;
+  if (['deliveries', 'alerts', 'employees'].includes(collectionName)) return true;
+  if (collectionName === 'epp_catalog' && method === 'PATCH') return true;
   return false;
 }
 
@@ -445,7 +446,8 @@ app.post('/api/batch', requireAuth, async (req, res, next) => {
   try {
     await db.exec('BEGIN');
     for (const operation of operations) {
-      if (!canWriteCollection(req.user, operation.collectionName, operation.type === 'delete' ? 'DELETE' : 'PUT')) {
+      const method = operation.type === 'delete' ? 'DELETE' : operation.type === 'update' ? 'PATCH' : 'PUT';
+      if (!canWriteCollection(req.user, operation.collectionName, method)) {
         const error = new Error('Permisos insuficientes');
         error.status = 403;
         throw error;

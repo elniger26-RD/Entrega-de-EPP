@@ -855,9 +855,29 @@ function AppContent() {
         return;
       }
 
+      const normalizeImportMatch = (value: string) => String(value || '')
+        .toUpperCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^A-Z0-9]+/g, ' ')
+        .trim();
+      const catalogSnapshot = await getDocs(collection(db, 'epp_catalog'));
+      const existingCatalog = catalogSnapshot.docs.map(d => ({ ...d.data(), id: d.id } as EPP));
+      const catalogById = new Map<string, EPP>(existingCatalog.map(item => [item.id.toUpperCase(), item]));
+      const catalogByNameSize = new Map<string, EPP>(existingCatalog.map(item => [
+        `${normalizeImportMatch(item.name)}|${normalizeImportMatch(item.size || extractSize(item.name) || '')}`,
+        item
+      ]));
+      const findCatalogMatch = (rawId: string, name: string, size: string): EPP | null => {
+        const byId = catalogById.get(rawId.toUpperCase());
+        if (byId) return byId;
+        return catalogByNameSize.get(`${normalizeImportMatch(name)}|${normalizeImportMatch(size || extractSize(name) || '')}`) || null;
+      };
+
       const deliveryGroups = new Map<string, Delivery>();
       const employeesToUpsert = new Map<string, Employee>();
       const eppsToUpsert = new Map<string, Partial<EPP> & { id: string }>();
+      const stockDeductions = new Map<string, number>();
 
       rows.forEach((row, index) => {
         const employeeId = String(readImportCell(row, ['ID Empleado', 'Empleado ID', 'Cedula', 'Cédula', 'Ficha', 'employeeId']) || '').trim();
@@ -880,7 +900,15 @@ function AppContent() {
           return;
         }
 
-        const eppId = eppIdRaw || eppName.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || `EPP-${index + 1}`;
+        const matchedEpp = findCatalogMatch(eppIdRaw, eppName, eppSize);
+        const generatedEppId = [eppName, eppSize || extractSize(eppName) || '']
+          .filter(Boolean)
+          .join(' ')
+          .toUpperCase()
+          .replace(/[^A-Z0-9]+/g, '-')
+          .replace(/^-|-$/g, '')
+          .slice(0, 80);
+        const eppId = matchedEpp?.id || eppIdRaw || generatedEppId || `EPP-${index + 1}`;
         const groupKey = [
           date.toISOString(),
           employeeId.toLowerCase(),
@@ -915,10 +943,12 @@ function AppContent() {
           position: String(readImportCell(row, ['Cargo', 'Posición', 'Position']) || '-')
         });
 
+        stockDeductions.set(eppId, (stockDeductions.get(eppId) || 0) + quantity);
         eppsToUpsert.set(eppId, {
           id: eppId,
           name: eppName,
           size: eppSize || extractSize(eppName) || '',
+          stock: matchedEpp?.stock ?? 0,
           category: String(readImportCell(row, ['Categoria', 'Categoría', 'Category']) || 'Importado')
         });
       });
@@ -929,10 +959,20 @@ function AppContent() {
         return;
       }
 
-      const operations: Array<{ kind: 'delivery' | 'employee' | 'epp'; id: string; data: any }> = [
-        ...importedDeliveries.map(delivery => ({ kind: 'delivery' as const, id: delivery.id!, data: delivery })),
+      const currentDeliveryIds = new Set(deliveries.map(delivery => delivery.id));
+      const freshDeliveries = importedDeliveries.filter(delivery => !currentDeliveryIds.has(delivery.id));
+      const freshStockDeductions = new Map<string, number>();
+      freshDeliveries.forEach(delivery => {
+        delivery.items.forEach(item => {
+          freshStockDeductions.set(item.eppId, (freshStockDeductions.get(item.eppId) || 0) + item.quantity);
+        });
+      });
+
+      const operations: Array<{ kind: 'delivery' | 'employee' | 'epp' | 'stock'; id: string; data: any }> = [
+        ...freshDeliveries.map(delivery => ({ kind: 'delivery' as const, id: delivery.id!, data: delivery })),
         ...Array.from(employeesToUpsert.values()).map(employee => ({ kind: 'employee' as const, id: employee.id, data: employee })),
         ...Array.from(eppsToUpsert.values()).map(epp => ({ kind: 'epp' as const, id: epp.id, data: epp })),
+        ...Array.from(freshStockDeductions.entries()).map(([id, quantity]) => ({ kind: 'stock' as const, id, data: { stock: increment(-quantity) } })),
       ];
 
       for (let i = 0; i < operations.length; i += 300) {
@@ -942,6 +982,8 @@ function AppContent() {
             batch.set(doc(db, 'deliveries', operation.id), operation.data, { merge: true });
           } else if (operation.kind === 'employee') {
             batch.set(doc(db, 'employees', operation.id), operation.data, { merge: true });
+          } else if (operation.kind === 'stock') {
+            batch.update(doc(db, 'epp_catalog', operation.id), operation.data);
           } else {
             batch.set(doc(db, 'epp_catalog', operation.id), operation.data, { merge: true });
           }
@@ -951,11 +993,11 @@ function AppContent() {
 
       setDeliveries(prev => {
         const existingIds = new Set(prev.map(delivery => delivery.id));
-        const fresh = importedDeliveries.filter(delivery => !existingIds.has(delivery.id));
+        const fresh = freshDeliveries.filter(delivery => !existingIds.has(delivery.id));
         return [...fresh, ...prev].sort((a, b) => getDate(b.date) - getDate(a.date));
       });
       setFullEppCatalog([]);
-      setSuccessMessage(`Historial importado: ${importedDeliveries.length} entregas, ${employeesToUpsert.size} empleados y ${eppsToUpsert.size} equipos consolidados.`);
+      setSuccessMessage(`Historial importado: ${freshDeliveries.length} entregas nuevas, ${employeesToUpsert.size} empleados, ${eppsToUpsert.size} equipos y stock descontado.`);
       setTimeout(() => setSuccessMessage(''), 5000);
     } catch (err) {
       console.error('Error importing history:', err);
@@ -2033,15 +2075,13 @@ function AppContent() {
               <History className="w-4 h-4" />
               <span className="hidden sm:inline">Historial</span>
             </button>
-            {isAdmin && (
-              <button 
-                onClick={() => setActiveTab('alerts')}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'alerts' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-100'}`}
-              >
-                <Bell className="w-4 h-4" />
-                <span className="hidden sm:inline">Alertas</span>
-              </button>
-            )}
+            <button 
+              onClick={() => setActiveTab('alerts')}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'alerts' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-100'}`}
+            >
+              <Bell className="w-4 h-4" />
+              <span className="hidden sm:inline">Alertas</span>
+            </button>
             {isAdmin && (
               <button 
                 onClick={() => setActiveTab('setup')}
@@ -2512,7 +2552,7 @@ function AppContent() {
             </motion.div>
           )}
 
-          {activeTab === 'alerts' && isAdmin && (
+          {activeTab === 'alerts' && (
             <motion.div 
               key="alerts"
               initial={{ opacity: 0, y: 20 }}
@@ -4056,15 +4096,13 @@ function AppContent() {
           <History className="w-6 h-6" />
           <span className="text-[10px] font-bold uppercase tracking-wider">Historial</span>
         </button>
-        {isAdmin && (
-          <button 
-            onClick={() => setActiveTab('alerts')}
-            className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'alerts' ? 'text-indigo-600' : 'text-slate-400'}`}
-          >
-            <Bell className="w-6 h-6" />
-            <span className="text-[10px] font-bold uppercase tracking-wider">Alertas</span>
-          </button>
-        )}
+        <button 
+          onClick={() => setActiveTab('alerts')}
+          className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'alerts' ? 'text-indigo-600' : 'text-slate-400'}`}
+        >
+          <Bell className="w-6 h-6" />
+          <span className="text-[10px] font-bold uppercase tracking-wider">Alertas</span>
+        </button>
         {isAdmin && (
           <button 
             onClick={() => setActiveTab('setup')}
