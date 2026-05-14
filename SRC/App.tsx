@@ -22,7 +22,8 @@ import {
   UserPlus,
   Shield,
   Bell,
-  Mail
+  Mail,
+  Upload
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import SignatureCanvas from 'react-signature-canvas';
@@ -673,6 +674,7 @@ function AppContent() {
   // Signature Ref
   const sigCanvas = useRef<SignatureCanvas | null>(null);
   const sigContainerRef = useRef<HTMLDivElement>(null);
+  const historyImportInputRef = useRef<HTMLInputElement | null>(null);
 
   // Resize signature canvas on window resize
   useEffect(() => {
@@ -761,6 +763,204 @@ function AppContent() {
       };
     });
     exportToExcel(data, 'alertas_sistema', 'Alertas');
+  };
+
+  const readImportCell = (row: Record<string, any>, labels: string[]) => {
+    const normalize = (value: string) => value
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]/g, '');
+
+    const normalizedRow = new Map<string, any>();
+    Object.entries(row).forEach(([key, value]) => {
+      normalizedRow.set(normalize(key), value);
+    });
+
+    for (const label of labels) {
+      const value = normalizedRow.get(normalize(label));
+      if (value !== undefined && value !== null && String(value).trim() !== '') {
+        return value;
+      }
+    }
+    return '';
+  };
+
+  const parseImportedDate = (dateValue: any, timeValue: any) => {
+    let date: Date | null = null;
+
+    if (typeof dateValue === 'number') {
+      const parsed = XLSX.SSF.parse_date_code(dateValue);
+      if (parsed) {
+        date = new Date(parsed.y, parsed.m - 1, parsed.d, parsed.H || 0, parsed.M || 0, Math.floor(parsed.S || 0));
+      }
+    } else if (dateValue instanceof Date) {
+      date = dateValue;
+    } else if (dateValue) {
+      const text = String(dateValue).trim();
+      const slashMatch = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})(.*)$/);
+      if (slashMatch) {
+        const day = Number(slashMatch[1]);
+        const month = Number(slashMatch[2]) - 1;
+        const year = Number(slashMatch[3].length === 2 ? `20${slashMatch[3]}` : slashMatch[3]);
+        date = new Date(year, month, day);
+      } else {
+        const parsed = new Date(text);
+        if (!isNaN(parsed.getTime())) date = parsed;
+      }
+    }
+
+    if (!date || isNaN(date.getTime())) date = new Date();
+
+    if (timeValue !== undefined && timeValue !== null && String(timeValue).trim() !== '') {
+      if (typeof timeValue === 'number') {
+        const totalSeconds = Math.round(timeValue * 24 * 60 * 60);
+        date.setHours(Math.floor(totalSeconds / 3600), Math.floor((totalSeconds % 3600) / 60), totalSeconds % 60, 0);
+      } else {
+        const timeText = String(timeValue).trim();
+        const match = timeText.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?|am|pm)?/i);
+        if (match) {
+          let hours = Number(match[1]);
+          const minutes = Number(match[2]);
+          const seconds = Number(match[3] || 0);
+          const meridian = match[4]?.toLowerCase() || '';
+          if (meridian.includes('p') && hours < 12) hours += 12;
+          if (meridian.includes('a') && hours === 12) hours = 0;
+          date.setHours(hours, minutes, seconds, 0);
+        }
+      }
+    }
+
+    return date;
+  };
+
+  const handleImportHistoryExcel = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setIsSubmitting(true);
+    setErrorMessage('');
+    setSuccessMessage('');
+
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { cellDates: true });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: '' });
+
+      if (rows.length === 0) {
+        setErrorMessage('El archivo no contiene filas para importar.');
+        return;
+      }
+
+      const deliveryGroups = new Map<string, Delivery>();
+      const employeesToUpsert = new Map<string, Employee>();
+      const eppsToUpsert = new Map<string, Partial<EPP> & { id: string }>();
+
+      rows.forEach((row, index) => {
+        const employeeId = String(readImportCell(row, ['ID Empleado', 'Empleado ID', 'Cedula', 'Cédula', 'Ficha', 'employeeId']) || '').trim();
+        const employeeName = String(readImportCell(row, ['Nombre Empleado', 'Empleado', 'Nombre', 'Colaborador', 'employeeName']) || '').trim();
+        const eppIdRaw = String(readImportCell(row, ['ID EPP', 'Codigo EPP', 'Código EPP', 'Codigo', 'Código', 'Item', 'eppId']) || '').trim();
+        const eppName = String(readImportCell(row, ['Equipo', 'EPP', 'Articulo', 'Artículo', 'Descripcion', 'Descripción', 'Description', 'eppName']) || '').trim();
+        const eppSize = String(readImportCell(row, ['Talla', 'Size', 'eppSize']) || '').trim();
+        const quantityValue = readImportCell(row, ['Cantidad', 'Cant.', 'Cant', 'Quantity']);
+        const quantity = Math.max(1, Number.parseInt(String(quantityValue || '1'), 10) || 1);
+        const importedType = String(readImportCell(row, ['Tipo', 'Tipo Entrega', 'type']) || 'nuevo').toLowerCase();
+        const type: 'nuevo' | 'reemplazo' = importedType.includes('reem') ? 'reemplazo' : 'nuevo';
+        const signature = String(readImportCell(row, ['Firma', 'Signature', 'signature']) || '').trim();
+        const date = parseImportedDate(
+          readImportCell(row, ['Fecha', 'Date', 'Fecha Entrega']),
+          readImportCell(row, ['Hora', 'Time']),
+        );
+
+        if (!employeeId || !employeeName || !eppName) {
+          console.warn('Fila de historial omitida por datos incompletos:', index + 2, row);
+          return;
+        }
+
+        const eppId = eppIdRaw || eppName.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || `EPP-${index + 1}`;
+        const groupKey = [
+          date.toISOString(),
+          employeeId.toLowerCase(),
+          employeeName.toLowerCase(),
+          type,
+          signature.slice(0, 30)
+        ].join('|');
+
+        if (!deliveryGroups.has(groupKey)) {
+          deliveryGroups.set(groupKey, {
+            id: `import-${date.getTime()}-${employeeId}-${deliveryGroups.size + 1}`.replace(/[^a-zA-Z0-9-_]/g, '-'),
+            employeeId,
+            employeeName,
+            items: [],
+            type,
+            date,
+            signature
+          });
+        }
+
+        deliveryGroups.get(groupKey)!.items.push({
+          eppId,
+          eppName,
+          eppSize: eppSize || extractSize(eppName) || '',
+          quantity
+        });
+
+        employeesToUpsert.set(employeeId, {
+          id: employeeId,
+          fullName: employeeName,
+          department: String(readImportCell(row, ['Departamento', 'Department']) || '-'),
+          position: String(readImportCell(row, ['Cargo', 'Posición', 'Position']) || '-')
+        });
+
+        eppsToUpsert.set(eppId, {
+          id: eppId,
+          name: eppName,
+          size: eppSize || extractSize(eppName) || '',
+          category: String(readImportCell(row, ['Categoria', 'Categoría', 'Category']) || 'Importado')
+        });
+      });
+
+      const importedDeliveries = Array.from(deliveryGroups.values()).filter(delivery => delivery.items.length > 0);
+      if (importedDeliveries.length === 0) {
+        setErrorMessage('No se detectaron entregas válidas. Revisa columnas como Fecha, ID Empleado, Nombre Empleado, Equipo y Cantidad.');
+        return;
+      }
+
+      const operations: Array<{ kind: 'delivery' | 'employee' | 'epp'; id: string; data: any }> = [
+        ...importedDeliveries.map(delivery => ({ kind: 'delivery' as const, id: delivery.id!, data: delivery })),
+        ...Array.from(employeesToUpsert.values()).map(employee => ({ kind: 'employee' as const, id: employee.id, data: employee })),
+        ...Array.from(eppsToUpsert.values()).map(epp => ({ kind: 'epp' as const, id: epp.id, data: epp })),
+      ];
+
+      for (let i = 0; i < operations.length; i += 300) {
+        const batch = writeBatch(db);
+        operations.slice(i, i + 300).forEach(operation => {
+          if (operation.kind === 'delivery') {
+            batch.set(doc(db, 'deliveries', operation.id), operation.data, { merge: true });
+          } else if (operation.kind === 'employee') {
+            batch.set(doc(db, 'employees', operation.id), operation.data, { merge: true });
+          } else {
+            batch.set(doc(db, 'epp_catalog', operation.id), operation.data, { merge: true });
+          }
+        });
+        await batch.commit();
+      }
+
+      setDeliveries(prev => {
+        const existingIds = new Set(prev.map(delivery => delivery.id));
+        const fresh = importedDeliveries.filter(delivery => !existingIds.has(delivery.id));
+        return [...fresh, ...prev].sort((a, b) => getDate(b.date) - getDate(a.date));
+      });
+      setFullEppCatalog([]);
+      setSuccessMessage(`Historial importado: ${importedDeliveries.length} entregas, ${employeesToUpsert.size} empleados y ${eppsToUpsert.size} equipos consolidados.`);
+      setTimeout(() => setSuccessMessage(''), 5000);
+    } catch (err) {
+      console.error('Error importing history:', err);
+      setErrorMessage('Error al importar el historial: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleSearchEmployee = async () => {
@@ -1297,10 +1497,40 @@ function AppContent() {
   const clearSignature = () => {
     sigCanvas.current?.clear();
   };
+  const selectedQuantityByEppId = React.useMemo(() => {
+    const totals = new Map<string, number>();
+    selectedEpps.forEach(epp => {
+      totals.set(epp.id, (totals.get(epp.id) || 0) + (epp.quantity || 1));
+    });
+    return totals;
+  }, [selectedEpps]);
+
+  const getReservedQuantityForOtherSelections = (eppId: string, currentIndex?: number) => {
+    return selectedEpps.reduce((total, epp, index) => {
+      if (epp.id !== eppId || index === currentIndex) return total;
+      return total + (epp.quantity || 1);
+    }, 0);
+  };
+
+  const validateSelectedStock = () => {
+    for (const epp of selectedEpps) {
+      const totalRequested = selectedQuantityByEppId.get(epp.id) || 0;
+      if (totalRequested > (epp.stock || 0)) {
+        return `No hay stock suficiente para "${epp.name}". Stock: ${epp.stock || 0}, solicitado: ${totalRequested}.`;
+      }
+    }
+    return '';
+  };
 
   const handleSaveDelivery = async () => {
     if (!foundEmployee || selectedEpps.length === 0) {
       setErrorMessage('Por favor seleccione un colaborador y al menos un artículo');
+      return;
+    }
+
+    const stockError = validateSelectedStock();
+    if (stockError) {
+      setErrorMessage(stockError);
       return;
     }
 
@@ -1469,7 +1699,24 @@ function AppContent() {
         signature: signatureData || ''
       };
 
-      await addDoc(collection(db, 'deliveries'), deliveryData);
+      const deliveryId = `delivery-${Date.now()}-${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
+      const batch = writeBatch(db);
+      batch.set(doc(db, 'deliveries', deliveryId), deliveryData);
+
+      const stockUpdates = new Map<string, { name: string; quantity: number }>();
+      selectedEpps.forEach(epp => {
+        const current = stockUpdates.get(epp.id) || { name: epp.name, quantity: 0 };
+        current.quantity += epp.quantity || 1;
+        stockUpdates.set(epp.id, current);
+      });
+
+      stockUpdates.forEach((item, eppId) => {
+        batch.update(doc(db, 'epp_catalog', eppId), {
+          stock: increment(-item.quantity)
+        });
+      });
+
+      await batch.commit();
 
       // Send notification to admin ONLY if there are alerts (warnings)
       if (warnings && warnings.length > 0) {
@@ -1478,19 +1725,16 @@ function AppContent() {
         // 2. Always log internally to SQLite
         saveAlertToDatabase(foundEmployee, deliveryData.items, warnings);
       }
-      
-      // Decrement stock for each item
-      for (const epp of selectedEpps) {
-        try {
-          const eppRef = doc(db, 'epp_catalog', epp.id);
-          await updateDoc(eppRef, {
-            stock: increment(-(epp.quantity || 1))
-          });
-        } catch (stockErr) {
-          console.error("Error updating stock for " + epp.id, stockErr);
-        }
-      }
-      
+      setDeliveries(prev => [{ ...deliveryData, id: deliveryId }, ...prev]);
+      setFullEppCatalog(prev => prev.map(item => {
+        const update = stockUpdates.get(item.id);
+        return update ? { ...item, stock: Math.max(0, (item.stock || 0) - update.quantity) } : item;
+      }));
+      setEppCatalog(prev => prev.map(item => {
+        const update = stockUpdates.get(item.id);
+        return update ? { ...item, stock: Math.max(0, (item.stock || 0) - update.quantity) } : item;
+      }));
+
       setSuccessMessage('Entrega registrada con éxito');
       setFoundEmployee(null);
       setSearchId('');
@@ -1631,7 +1875,7 @@ function AppContent() {
               <ShieldCheck className="w-10 h-10 text-indigo-600" />
             </div>
           </div>
-          <h1 className="text-2xl font-bold text-slate-900 mb-2">Control de EPP</h1>
+          <h1 className="text-2xl font-bold text-slate-900 mb-2">Entrega de EPP</h1>
           <p className="text-slate-500 mb-8">Inicie sesión para gestionar la entrega de equipos de protección personal.</p>
           
           {!isEmailLogin ? (
@@ -1724,7 +1968,7 @@ function AppContent() {
                 <HardHat className="text-white w-5 h-5" />
               </div>
             </div>
-            <h1 className="text-xl font-bold tracking-tight hidden sm:block">Control de EPP</h1>
+            <h1 className="text-xl font-bold tracking-tight hidden sm:block">Entrega de EPP</h1>
           </div>
           
           <nav className="flex items-center gap-1 sm:gap-4">
@@ -1985,11 +2229,13 @@ function AppContent() {
                           <p className="text-[10px] font-bold text-slate-400 uppercase px-2">Equipos encontrados:</p>
                           {eppSearchResults.map(item => {
                             const isExactIdMatch = item.id.toUpperCase() === searchEppId.trim().toUpperCase();
+                            const reserved = selectedQuantityByEppId.get(item.id) || 0;
+                            const availableStock = Math.max(0, (item.stock || 0) - reserved);
                             return (
                               <button
                                 key={item.id}
                                 onClick={() => {
-                                  if (item.stock <= 0) {
+                                  if (availableStock <= 0) {
                                     setErrorMessage(`No hay stock disponible para: ${item.name}`);
                                     setTimeout(() => setErrorMessage(''), 3000);
                                     return;
@@ -2004,9 +2250,9 @@ function AppContent() {
                                   setEppSearchResults([]);
                                   setSearchEppId('');
                                 }}
-                                disabled={item.stock <= 0}
+                                disabled={availableStock <= 0}
                                 className={`w-full text-left p-3 rounded-xl transition-all border border-transparent flex justify-between items-center group ${
-                                  item.stock <= 0 
+                                  availableStock <= 0 
                                     ? 'bg-slate-100 opacity-60 cursor-not-allowed' 
                                     : isExactIdMatch 
                                       ? 'bg-indigo-50 border-indigo-200' 
@@ -2015,13 +2261,13 @@ function AppContent() {
                               >
                                 <div className="flex-1">
                                   <div className="flex items-center gap-2">
-                                    <p className={`font-bold ${item.stock <= 0 ? 'text-slate-400' : 'text-slate-800'}`}>{item.name}</p>
+                                    <p className={`font-bold ${availableStock <= 0 ? 'text-slate-400' : 'text-slate-800'}`}>{item.name}</p>
                                     {isExactIdMatch && (
                                       <span className="text-[9px] bg-indigo-600 text-white px-1.5 py-0.5 rounded font-bold uppercase">ID Exacto</span>
                                     )}
                                   {(extractSize(item.name) || item.size) && (
                                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${
-                                      item.stock <= 0 ? 'bg-slate-200 text-slate-400' : 'bg-indigo-100 text-indigo-700'
+                                      availableStock <= 0 ? 'bg-slate-200 text-slate-400' : 'bg-indigo-100 text-indigo-700'
                                     }`}>
                                       Talla: {extractSize(item.name) || item.size}
                                     </span>
@@ -2030,10 +2276,11 @@ function AppContent() {
                                 <p className="text-[10px] text-slate-500 font-mono">Código: {item.id}</p>
                               </div>
                               <div className="text-right">
-                                <p className={`text-xs font-bold ${item.stock <= 5 ? 'text-red-500' : 'text-slate-600'}`}>
-                                  Stock: {item.stock}
+                                <p className={`text-xs font-bold ${availableStock <= 5 ? 'text-red-500' : 'text-slate-600'}`}>
+                                  Disponible: {availableStock}
                                 </p>
-                                <Plus className={`w-4 h-4 ml-auto transition-transform group-hover:scale-125 ${item.stock <= 0 ? 'text-slate-300' : 'text-indigo-600'}`} />
+                                {reserved > 0 && <p className="text-[9px] text-slate-400">Reservado: {reserved}</p>}
+                                <Plus className={`w-4 h-4 ml-auto transition-transform group-hover:scale-125 ${availableStock <= 0 ? 'text-slate-300' : 'text-indigo-600'}`} />
                               </div>
                             </button>
                           );
@@ -2076,8 +2323,8 @@ function AppContent() {
                                     <div className="flex items-center gap-2 mt-1">
                                       <p className="text-slate-400 text-[9px] font-medium uppercase tracking-wider">{epp.category}</p>
                                       <span className="w-1 h-1 bg-slate-200 rounded-full"></span>
-                                      <p className={`text-[9px] font-bold ${epp.stock <= 5 ? 'text-rose-600' : epp.stock <= 10 ? 'text-amber-600' : 'text-indigo-600'}`}>
-                                        Stock: {epp.stock}
+                                      <p className={`text-[9px] font-bold ${((epp.stock || 0) - getReservedQuantityForOtherSelections(epp.id, index)) <= 5 ? 'text-rose-600' : ((epp.stock || 0) - getReservedQuantityForOtherSelections(epp.id, index)) <= 10 ? 'text-amber-600' : 'text-indigo-600'}`}>
+                                        Disponible: {Math.max(0, (epp.stock || 0) - getReservedQuantityForOtherSelections(epp.id, index))}
                                       </p>
                                     </div>
                                   </div>
@@ -2102,7 +2349,8 @@ function AppContent() {
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      if ((epp.quantity || 1) >= epp.stock) {
+                                      const maxForThisSelection = Math.max(1, (epp.stock || 0) - getReservedQuantityForOtherSelections(epp.id, index));
+                                      if ((epp.quantity || 1) >= maxForThisSelection) {
                                         setErrorMessage(`No hay más stock disponible`);
                                         setTimeout(() => setErrorMessage(''), 3000);
                                         return;
@@ -2341,6 +2589,13 @@ function AppContent() {
                 </div>
                 
                 <div className="flex items-center gap-2">
+                  <input
+                    ref={historyImportInputRef}
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    className="hidden"
+                    onChange={handleImportHistoryExcel}
+                  />
                   <div className="relative flex-1 md:w-64">
                     <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                     <input 
@@ -2351,6 +2606,16 @@ function AppContent() {
                       className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
                     />
                   </div>
+                  {isAdmin && (
+                    <button
+                      onClick={() => historyImportInputRef.current?.click()}
+                      disabled={isSubmitting}
+                      className="flex items-center gap-2 bg-indigo-50 text-indigo-700 px-4 py-2 rounded-xl text-sm font-medium hover:bg-indigo-100 transition-all shadow-sm border border-indigo-100 disabled:opacity-50"
+                    >
+                      <Upload className="w-4 h-4" />
+                      Importar Excel
+                    </button>
+                  )}
                   <button 
                     onClick={exportDeliveriesExcel}
                     className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-emerald-700 transition-all shadow-sm"
@@ -2489,7 +2754,7 @@ function AppContent() {
                     ))}
                     {filteredDeliveries.length === 0 && (
                       <tr>
-                        <td colSpan={8} className="px-6 py-12 text-center text-slate-400">
+                        <td colSpan={9} className="px-6 py-12 text-center text-slate-400">
                           No se han registrado entregas aún.
                         </td>
                       </tr>
@@ -3743,3 +4008,6 @@ function AppContent() {
     </div>
   );
 }
+
+
+

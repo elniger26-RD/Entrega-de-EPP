@@ -136,7 +136,16 @@ export async function getDocs(refOrQuery: CollectionRef | QuerySpec) {
 export const getDocsFromServer = getDocs;
 
 export async function getDocFromServer(ref: DocRef) {
-  const result = await api(`/documents/${encodeURIComponent(ref.collectionName)}/${encodeURIComponent(ref.id)}`);
+  let result;
+  try {
+    result = await api(`/documents/${encodeURIComponent(ref.collectionName)}/${encodeURIComponent(ref.id)}`);
+  } catch {
+    return {
+      id: ref.id,
+      exists: () => false,
+      data: () => undefined,
+    };
+  }
   return {
     id: ref.id,
     exists: () => Boolean(result.exists),
