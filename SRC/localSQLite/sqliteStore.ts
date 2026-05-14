@@ -135,6 +135,13 @@ export async function getDocs(refOrQuery: CollectionRef | QuerySpec) {
 
 export const getDocsFromServer = getDocs;
 
+export async function searchDocuments(collectionName: string, term: string, maxResults = 25) {
+  const result = await api(
+    `/search/${encodeURIComponent(collectionName)}?term=${encodeURIComponent(term)}&limit=${encodeURIComponent(String(maxResults))}`
+  );
+  return (result.documents || []).map((document: any) => ({ ...document }));
+}
+
 export async function getDocFromServer(ref: DocRef) {
   let result;
   try {

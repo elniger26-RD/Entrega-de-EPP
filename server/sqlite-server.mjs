@@ -163,6 +163,26 @@ async function listDocuments(collectionName, options = {}) {
   return rows.map((row) => ({ id: row.id, ...JSON.parse(row.data) }));
 }
 
+async function searchDocuments(collectionName, term, limit = 25) {
+  const cleanTerm = String(term || '').trim();
+  if (!cleanTerm) return [];
+
+  const pattern = `%${cleanTerm}%`;
+  const rows = await db.all(
+    `SELECT id, data
+     FROM documents
+     WHERE collection_name = ?
+       AND (id LIKE ? COLLATE NOCASE OR data LIKE ? COLLATE NOCASE)
+     LIMIT ?`,
+    collectionName,
+    pattern,
+    pattern,
+    Math.max(1, Math.min(200, Number(limit) || 25)),
+  );
+
+  return rows.map((row) => ({ id: row.id, ...JSON.parse(row.data) }));
+}
+
 function safeJsonField(field) {
   const value = String(field || '');
   return /^[A-Za-z0-9_]+$/.test(value) ? value : null;
@@ -318,6 +338,16 @@ app.get('/api/documents/:collectionName', requireAuth, async (req, res, next) =>
   try {
     const options = req.query.q ? JSON.parse(String(req.query.q)) : {};
     res.json({ documents: await listDocuments(req.params.collectionName, options) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/search/:collectionName', requireAuth, async (req, res, next) => {
+  try {
+    res.json({
+      documents: await searchDocuments(req.params.collectionName, req.query.term, req.query.limit),
+    });
   } catch (error) {
     next(error);
   }

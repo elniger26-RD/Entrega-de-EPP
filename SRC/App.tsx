@@ -44,7 +44,8 @@ import {
   getDocFromServer,
   getDocsFromServer,
   writeBatch,
-  limit
+  limit,
+  searchDocuments
 } from './localSQLite/sqliteStore';
 import { onAuthStateChanged, User as LocalUser } from './localSQLite/auth';
 import { db, auth, loginAsLocalAdmin, logout, createSecondaryUser, signInWithEmailAndPassword, sendPasswordResetEmail } from './database';
@@ -983,7 +984,8 @@ function AppContent() {
         return;
       }
       
-      const employeeQueries = [
+      const broadResults = await searchDocuments('employees', term, 20) as Employee[];
+      const employeeQueries = broadResults.length > 0 ? [] : [
         query(collection(db, 'employees'), where('id', '>=', termUpper), where('id', '<=', termUpper + '\uf8ff'), limit(10)),
         query(collection(db, 'employees'), where('fullName', '>=', termUpper), where('fullName', '<=', termUpper + '\uf8ff'), limit(10)),
         query(collection(db, 'employees'), where('fullName', '>=', termCapitalized), where('fullName', '<=', termCapitalized + '\uf8ff'), limit(10))
@@ -992,7 +994,10 @@ function AppContent() {
       const snapshots = (await Promise.allSettled(employeeQueries.map(q => getDocs(q))))
         .filter((result): result is PromiseFulfilledResult<any> => result.status === 'fulfilled')
         .map(result => result.value);
-      const allResults = snapshots.flatMap(s => s.docs.map(doc => doc.data() as Employee));
+      const allResults = [
+        ...broadResults,
+        ...snapshots.flatMap(s => s.docs.map(doc => doc.data() as Employee))
+      ];
       
       // Filter unique by ID
       const uniqueResults: Employee[] = [];
@@ -1049,8 +1054,9 @@ function AppContent() {
         return;
       }
 
+      const broadResults = await searchDocuments('epp_catalog', term, 30) as EPP[];
       const termCapitalized = term.charAt(0).toUpperCase() + term.slice(1).toLowerCase();
-      const allQueries = [
+      const allQueries = broadResults.length > 0 ? [] : [
         query(collection(db, 'epp_catalog'), where('id', '>=', termUpper), where('id', '<=', termUpper + '\uf8ff'), limit(20)),
         query(collection(db, 'epp_catalog'), where('name', '>=', termUpper), where('name', '<=', termUpper + '\uf8ff'), limit(20)),
         query(collection(db, 'epp_catalog'), where('name', '>=', termCapitalized), where('name', '<=', termCapitalized + '\uf8ff'), limit(20))
@@ -1059,7 +1065,10 @@ function AppContent() {
       const snapshots = (await Promise.allSettled(allQueries.map(q => getDocs(q))))
         .filter((result): result is PromiseFulfilledResult<any> => result.status === 'fulfilled')
         .map(result => result.value);
-      const allResults = snapshots.flatMap(s => s.docs.map(doc => ({ ...(doc.data() as any), id: doc.id } as EPP)));
+      const allResults = [
+        ...broadResults,
+        ...snapshots.flatMap(s => s.docs.map(doc => ({ ...(doc.data() as any), id: doc.id } as EPP)))
+      ];
       
       // Filter unique and prioritize
       const resultsMap = new Map<string, EPP>();
@@ -1429,15 +1438,15 @@ function AppContent() {
         const empTerm = catalogSearchTerm.trim();
         const empTermUpper = empTerm.toUpperCase();
         const empTermCap = empTerm.charAt(0).toUpperCase() + empTerm.slice(1).toLowerCase();
+        const broadEmployees = await searchDocuments('employees', empTerm, 50) as Employee[];
         
-        const q1 = query(collection(db, 'employees'), where('id', '>=', empTermUpper), where('id', '<=', empTermUpper + '\uf8ff'), limit(50));
-        const q2 = query(collection(db, 'employees'), where('fullName', '>=', empTermCap), where('fullName', '<=', empTermCap + '\uf8ff'), limit(50));
-        
-        const [s1, s2] = await withCatalogTimeout(Promise.all([getDocs(q1), getDocs(q2)]));
+        const q1 = broadEmployees.length > 0 ? null : query(collection(db, 'employees'), where('id', '>=', empTermUpper), where('id', '<=', empTermUpper + '\uf8ff'), limit(50));
+        const q2 = broadEmployees.length > 0 ? null : query(collection(db, 'employees'), where('fullName', '>=', empTermCap), where('fullName', '<=', empTermCap + '\uf8ff'), limit(50));
+        const queryPromises = [q1, q2].filter(Boolean).map(q => getDocs(q as any));
+        const [s1, s2] = queryPromises.length > 0 ? await withCatalogTimeout(Promise.all(queryPromises)) : [{ docs: [] }, { docs: [] }];
         const empResults: Employee[] = [];
         const seenEmpIds = new Set<string>();
-        [...s1.docs, ...s2.docs].forEach(doc => {
-          const d = doc.data() as Employee;
+        [...broadEmployees, ...s1.docs.map(doc => doc.data() as Employee), ...s2.docs.map(doc => doc.data() as Employee)].forEach(d => {
           if (!seenEmpIds.has(d.id)) {
             empResults.push(d);
             seenEmpIds.add(d.id);
@@ -1454,12 +1463,19 @@ function AppContent() {
       if (term) {
         let eppResults: EPP[] = [];
         const seenEppIds = new Set<string>();
+        const broadEppResults = await searchDocuments('epp_catalog', term, 100) as EPP[];
+        broadEppResults.forEach(item => {
+          if (!seenEppIds.has(item.id)) {
+            eppResults.push(item);
+            seenEppIds.add(item.id);
+          }
+        });
 
         // Priority 1: Exact/Prefix ID
         const eq1 = query(collection(db, 'epp_catalog'), where('id', '>=', termUpper), where('id', '<=', termUpper + '\uf8ff'), limit(50));
         const eq2 = query(collection(db, 'epp_catalog'), where('id', '>=', term), where('id', '<=', term + '\uf8ff'), limit(50));
         
-        const [es1, es2] = await withCatalogTimeout(Promise.all([getDocs(eq1), getDocs(eq2)]));
+        const [es1, es2] = broadEppResults.length > 0 ? [{ docs: [] }, { docs: [] }] : await withCatalogTimeout(Promise.all([getDocs(eq1), getDocs(eq2)]));
         [...es1.docs, ...es2.docs].forEach(doc => {
           const d = { ...doc.data(), id: doc.id } as EPP;
           if (!seenEppIds.has(d.id)) {
