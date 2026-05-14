@@ -167,16 +167,39 @@ async function searchDocuments(collectionName, term, limit = 25) {
   const cleanTerm = String(term || '').trim();
   if (!cleanTerm) return [];
 
-  const pattern = `%${cleanTerm}%`;
+  const searchable = `LOWER(id || ' ' || data)`;
+  const compactSearchable = `LOWER(REPLACE(REPLACE(REPLACE(id || data, '-', ''), '_', ''), ' ', ''))`;
+  const normalizedTerm = cleanTerm.toLowerCase();
+  const compactTerm = normalizedTerm.replace(/[-_\s]/g, '');
+  const tokens = normalizedTerm.split(/\s+/).filter(Boolean).slice(0, 8);
+  const tokenClauses = tokens.map(() => `(${searchable} LIKE ? OR ${compactSearchable} LIKE ?)`);
+  const whereSearch = tokenClauses.length > 0 ? `AND ${tokenClauses.join(' AND ')}` : '';
+  const searchParams = tokens.flatMap((token) => {
+    const compactToken = token.replace(/[-_\s]/g, '');
+    return [`%${token}%`, `%${compactToken}%`];
+  });
+
   const rows = await db.all(
     `SELECT id, data
      FROM documents
      WHERE collection_name = ?
-       AND (id LIKE ? COLLATE NOCASE OR data LIKE ? COLLATE NOCASE)
+       ${whereSearch}
+     ORDER BY
+       CASE
+         WHEN LOWER(id) = ? THEN 0
+         WHEN LOWER(id) LIKE ? THEN 1
+         WHEN ${compactSearchable} LIKE ? THEN 2
+         WHEN ${searchable} LIKE ? THEN 3
+         ELSE 4
+       END,
+       id ASC
      LIMIT ?`,
     collectionName,
-    pattern,
-    pattern,
+    ...searchParams,
+    normalizedTerm,
+    `${normalizedTerm}%`,
+    `${compactTerm}%`,
+    `%${normalizedTerm}%`,
     Math.max(1, Math.min(200, Number(limit) || 25)),
   );
 
