@@ -675,6 +675,7 @@ function AppContent() {
   const sigCanvas = useRef<SignatureCanvas | null>(null);
   const sigContainerRef = useRef<HTMLDivElement>(null);
   const historyImportInputRef = useRef<HTMLInputElement | null>(null);
+  const catalogFetchSeq = useRef(0);
 
   // Resize signature canvas on window resize
   useEffect(() => {
@@ -1274,7 +1275,11 @@ function AppContent() {
   // Separate effect for Catalog data to avoid loading 2500+ items at once
   useEffect(() => {
     if (user && activeTab === 'setup') {
-      fetchCatalogData();
+      const timer = window.setTimeout(() => {
+        fetchCatalogData();
+      }, 250);
+
+      return () => window.clearTimeout(timer);
     }
   }, [user, activeTab, catalogSearchTerm, eppSearchTerm, showAllEmployees, showAllEpp]);
 
@@ -1391,14 +1396,37 @@ function AppContent() {
   };
 
   const [isLoadingCatalog, setIsLoadingCatalog] = useState(false);
-  
+
+  const withCatalogTimeout = async <T,>(
+    promise: Promise<T>,
+    message = 'La sincronizacion tardo demasiado. Intente refrescar nuevamente.'
+  ): Promise<T> => {
+    let timeoutId: number | undefined;
+
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timeoutId = window.setTimeout(() => reject(new Error(message)), 10000);
+        })
+      ]);
+    } finally {
+      if (timeoutId) {
+        window.clearTimeout(timeoutId);
+      }
+    }
+  };
+
   const fetchCatalogData = async () => {
+    const fetchSeq = ++catalogFetchSeq.current;
     setIsLoadingCatalog(true);
     try {
       const term = eppSearchTerm.trim();
       const termUpper = term.toUpperCase();
       const termLower = term.toLowerCase();
       const termCapitalized = term.charAt(0).toUpperCase() + term.slice(1).toLowerCase();
+      let nextEmployees: Employee[] | null = null;
+      let nextEppCatalog: EPP[] | null = null;
 
       // Employees
       if (catalogSearchTerm.trim()) {
@@ -1409,7 +1437,7 @@ function AppContent() {
         const q1 = query(collection(db, 'employees'), where('id', '>=', empTermUpper), where('id', '<=', empTermUpper + '\uf8ff'), limit(50));
         const q2 = query(collection(db, 'employees'), where('fullName', '>=', empTermCap), where('fullName', '<=', empTermCap + '\uf8ff'), limit(50));
         
-        const [s1, s2] = await Promise.all([getDocs(q1), getDocs(q2)]);
+        const [s1, s2] = await withCatalogTimeout(Promise.all([getDocs(q1), getDocs(q2)]));
         const empResults: Employee[] = [];
         const seenEmpIds = new Set<string>();
         [...s1.docs, ...s2.docs].forEach(doc => {
@@ -1419,11 +1447,11 @@ function AppContent() {
             seenEmpIds.add(d.id);
           }
         });
-        setEmployees(empResults);
+        nextEmployees = empResults;
       } else {
         const q = query(collection(db, 'employees'), limit(showAllEmployees ? 5000 : 50));
-        const s = await getDocs(q);
-        setEmployees(s.docs.map(d => d.data() as Employee));
+        const s = await withCatalogTimeout(getDocs(q));
+        nextEmployees = s.docs.map(d => d.data() as Employee);
       }
 
       // EPP
@@ -1435,7 +1463,7 @@ function AppContent() {
         const eq1 = query(collection(db, 'epp_catalog'), where('id', '>=', termUpper), where('id', '<=', termUpper + '\uf8ff'), limit(50));
         const eq2 = query(collection(db, 'epp_catalog'), where('id', '>=', term), where('id', '<=', term + '\uf8ff'), limit(50));
         
-        const [es1, es2] = await Promise.all([getDocs(eq1), getDocs(eq2)]);
+        const [es1, es2] = await withCatalogTimeout(Promise.all([getDocs(eq1), getDocs(eq2)]));
         [...es1.docs, ...es2.docs].forEach(doc => {
           const d = { ...doc.data(), id: doc.id } as EPP;
           if (!seenEppIds.has(d.id)) {
@@ -1450,7 +1478,7 @@ function AppContent() {
           const nq2 = query(collection(db, 'epp_catalog'), where('name', '>=', termLower), where('name', '<=', termLower + '\uf8ff'), limit(50));
           const nq3 = query(collection(db, 'epp_catalog'), where('name', '>=', termCapitalized), where('name', '<=', termCapitalized + '\uf8ff'), limit(50));
           
-          const [ns1, ns2, ns3] = await Promise.all([getDocs(nq1), getDocs(nq2), getDocs(nq3)]);
+          const [ns1, ns2, ns3] = await withCatalogTimeout(Promise.all([getDocs(nq1), getDocs(nq2), getDocs(nq3)]));
           [...ns1.docs, ...ns2.docs, ...ns3.docs].forEach(doc => {
             const d = { ...doc.data(), id: doc.id } as EPP;
             if (!seenEppIds.has(d.id)) {
@@ -1477,19 +1505,27 @@ function AppContent() {
           });
         }
 
-        setEppCatalog(eppResults.slice(0, 100));
+        nextEppCatalog = eppResults.slice(0, 100);
       } else {
         const q = query(collection(db, 'epp_catalog'), limit(showAllEpp ? 5000 : 100));
         // Force server fetch to see the truly cleared state
-        const s = await getDocsFromServer(q);
+        const s = await withCatalogTimeout(getDocsFromServer(q));
         const fetched = s.docs.map(doc => ({ ...doc.data(), id: doc.id } as EPP));
         console.log(`Fetch Catálogo (Servidor): ${fetched.length} items encontrados.`);
-        setEppCatalog(fetched);
+        nextEppCatalog = fetched;
       }
+
+      if (fetchSeq !== catalogFetchSeq.current) return;
+      if (nextEmployees) setEmployees(nextEmployees);
+      if (nextEppCatalog) setEppCatalog(nextEppCatalog);
     } catch (error) {
+      if (fetchSeq !== catalogFetchSeq.current) return;
       console.error("Error fetching data:", error);
+      setErrorMessage(error instanceof Error ? error.message : 'No se pudo sincronizar el catalogo.');
     } finally {
-      setIsLoadingCatalog(false);
+      if (fetchSeq === catalogFetchSeq.current) {
+        setIsLoadingCatalog(false);
+      }
     }
   };
 
@@ -3231,6 +3267,9 @@ function AppContent() {
                       />
                     </div>
                   </div>
+                  {isLoadingCatalog && eppCatalog.length > 0 && (
+                    <p className="mb-2 text-[10px] text-indigo-500">Actualizando catalogo...</p>
+                  )}
                   <div className="max-h-96 overflow-y-auto">
                     <table className="w-full text-left text-sm">
                       <thead className="bg-slate-50 sticky top-0">
@@ -3244,7 +3283,7 @@ function AppContent() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100">
-                        {isLoadingCatalog ? (
+                        {isLoadingCatalog && eppCatalog.length === 0 ? (
                           <tr>
                             <td colSpan={6} className="p-8 text-center text-slate-400">
                               <div className="flex flex-col items-center gap-2">
