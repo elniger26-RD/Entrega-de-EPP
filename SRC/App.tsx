@@ -307,7 +307,7 @@ function AppContent() {
   };
 
   useEffect(() => {
-    if (user && (activeTab === 'delivery' || activeTab === 'setup')) {
+    if (user && activeTab === 'setup') {
       preloadCatalog();
     }
   }, [user, activeTab]);
@@ -966,6 +966,8 @@ function AppContent() {
 
   const handleSearchEmployee = async () => {
     if (!searchId.trim()) return;
+    setErrorMessage('');
+    setEmployeeSearchResults([]);
     try {
       const term = searchId.trim();
       const termUpper = term.toUpperCase();
@@ -988,7 +990,9 @@ function AppContent() {
         query(collection(db, 'employees'), where('fullName', '>=', termLower), where('fullName', '<=', termLower + '\uf8ff'), limit(10))
       ];
 
-      const snapshots = await Promise.all([...idQueries, ...nameQueries].map(q => getDocs(q)));
+      const snapshots = (await Promise.allSettled([...idQueries, ...nameQueries].map(q => getDocs(q))))
+        .filter((result): result is PromiseFulfilledResult<any> => result.status === 'fulfilled')
+        .map(result => result.value);
       const allResults = snapshots.flatMap(s => s.docs.map(doc => doc.data() as Employee));
       
       // Filter unique by ID
@@ -1015,20 +1019,21 @@ function AppContent() {
         setErrorMessage('Empleado no encontrado');
       }
     } catch (err) {
-      handleDatabaseError(err, OperationType.GET, 'employees');
+      console.error('Error searching employee:', err);
+      setFoundEmployee(null);
+      setErrorMessage('No se pudo buscar el empleado. Intente nuevamente.');
     }
   };
 
   const handleSearchEpp = async () => {
     if (!searchEppId.trim()) return;
+    setErrorMessage('');
+    setEppSearchResults([]);
     try {
       const term = searchEppId.trim();
       const termLower = term.toLowerCase();
       const termUpper = term.toUpperCase();
       
-      // Ensure catalog is at least being loaded if we need it
-      if (fullEppCatalog.length === 0) preloadCatalog();
-
       // 1. Try exact ID match first
       const exactDoc = await getDocFromServer(doc(db, 'epp_catalog', term));
       const exactDocUpper = await getDocFromServer(doc(db, 'epp_catalog', termUpper));
@@ -1063,7 +1068,9 @@ function AppContent() {
         allQueries.push(query(collection(db, 'epp_catalog'), where('name', '>=', tUpper), where('name', '<=', tUpper + '\uf8ff'), limit(20)));
       });
       
-      const snapshots = await Promise.all(allQueries.map(q => getDocs(q)));
+      const snapshots = (await Promise.allSettled(allQueries.map(q => getDocs(q))))
+        .filter((result): result is PromiseFulfilledResult<any> => result.status === 'fulfilled')
+        .map(result => result.value);
       const allResults = snapshots.flatMap(s => s.docs.map(doc => ({ ...(doc.data() as any), id: doc.id } as EPP)));
       
       // Filter unique and prioritize
@@ -1098,7 +1105,8 @@ function AppContent() {
         setErrorMessage('');
       }
     } catch (err) {
-      handleDatabaseError(err, OperationType.GET, 'epp_catalog');
+      console.error('Error searching EPP:', err);
+      setErrorMessage('No se pudo buscar el EPP. Intente nuevamente.');
     }
   };
 
@@ -1521,7 +1529,6 @@ function AppContent() {
     } catch (error) {
       if (fetchSeq !== catalogFetchSeq.current) return;
       console.error("Error fetching data:", error);
-      setErrorMessage(error instanceof Error ? error.message : 'No se pudo sincronizar el catalogo.');
     } finally {
       if (fetchSeq === catalogFetchSeq.current) {
         setIsLoadingCatalog(false);
@@ -2131,7 +2138,10 @@ function AppContent() {
                       type="text" 
                       placeholder="ID o Nombre del Empleado"
                       value={searchId}
-                      onChange={(e) => setSearchId(e.target.value)}
+                      onChange={(e) => {
+                        setSearchId(e.target.value);
+                        setErrorMessage('');
+                      }}
                       onKeyPress={(e) => e.key === 'Enter' && handleSearchEmployee()}
                       className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 focus:ring-2 focus:ring-indigo-500 focus:border-transparent outline-none transition-all"
                     />
@@ -2241,7 +2251,10 @@ function AppContent() {
                           type="text" 
                           placeholder="Ingrese código o nombre"
                           value={searchEppId}
-                          onChange={(e) => setSearchEppId(e.target.value)}
+                          onChange={(e) => {
+                            setSearchEppId(e.target.value);
+                            setErrorMessage('');
+                          }}
                           onKeyPress={(e) => e.key === 'Enter' && handleSearchEpp()}
                           className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
                         />
