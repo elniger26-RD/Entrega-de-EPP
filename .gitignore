@@ -11,3 +11,6 @@ data/backups/
 proyecto-epp-github.zip
 Microsoft.Services.Store.winmd
 *.crdownload
+eng.traineddata
+tmp_ocr/
+tmp_pdf_pages/

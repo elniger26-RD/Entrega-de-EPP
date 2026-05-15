@@ -530,6 +530,14 @@ function AppContent() {
   // History State
   const [deliveries, setDeliveries] = useState<Delivery[]>([]);
   const [historySearchTerm, setHistorySearchTerm] = useState('');
+  const [editingHistoryItem, setEditingHistoryItem] = useState<{
+    deliveryId: string;
+    itemIndex: number;
+    eppId: string;
+    eppName: string;
+    eppSize: string;
+    quantity: number;
+  } | null>(null);
 
   // Regex for EPP detection
   const bootsRegex = /\b(botas?|bot[ií]n(es)?|bota)/i;
@@ -644,6 +652,7 @@ function AppContent() {
           flattened.push({
             ...delivery,
             flattenedItem: item,
+            flattenedIndex: index,
             flattenedId: `${delivery.id}-${index}`
           });
         });
@@ -1445,6 +1454,99 @@ function AppContent() {
     } catch (err) {
       console.error("Error clearing history:", err);
       setErrorMessage('Error al reiniciar el historial: ' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const normalizeCatalogKey = (value: string) => String(value || '')
+    .toUpperCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim();
+
+  const findCatalogItemForHistoryEdit = async (item: DeliveryItem, requestedSize: string): Promise<EPP | null> => {
+    const catalogSnapshot = await getDocs(query(collection(db, 'epp_catalog'), limit(5000)));
+    const catalog = catalogSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as EPP));
+    const targetSize = normalizeCatalogKey(requestedSize || item.eppSize || extractSize(item.eppName) || '');
+    const currentId = String(item.eppId || '');
+    const currentPrefix = currentId.replace(/[-_]?([0-9]*X?L|XS|S|M|L|XL|XXL|XXXL|[0-9]{1,2})$/i, '').replace(/[-_]+$/g, '');
+    const nameKey = normalizeCatalogKey(item.eppName);
+
+    return catalog.find(epp => (
+      normalizeCatalogKey(epp.name) === nameKey &&
+      normalizeCatalogKey(epp.size || extractSize(epp.name) || '') === targetSize
+    )) || catalog.find(epp => (
+      currentPrefix &&
+      epp.id.toUpperCase().startsWith(currentPrefix.toUpperCase()) &&
+      normalizeCatalogKey(epp.size || extractSize(epp.name) || '') === targetSize
+    )) || null;
+  };
+
+  const handleSaveHistoryItemEdit = async () => {
+    if (!editingHistoryItem) return;
+    const targetDelivery = deliveries.find(delivery => delivery.id === editingHistoryItem.deliveryId);
+    if (!targetDelivery || !targetDelivery.id) {
+      setErrorMessage('No se encontrÃ³ la entrega a editar.');
+      return;
+    }
+
+    const currentItems = Array.isArray(targetDelivery.items) ? [...targetDelivery.items] : [];
+    const originalItem = currentItems[editingHistoryItem.itemIndex];
+    if (!originalItem) {
+      setErrorMessage('No se encontrÃ³ el item dentro del historial.');
+      return;
+    }
+
+    const newQuantity = Math.max(0, Number(editingHistoryItem.quantity) || 0);
+    const newSize = editingHistoryItem.eppSize.trim().toUpperCase();
+    if (newQuantity < 0) {
+      setErrorMessage('La cantidad no puede ser negativa.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    setErrorMessage('');
+    try {
+      const matchedEpp = await findCatalogItemForHistoryEdit(originalItem, newSize);
+      const nextItem: DeliveryItem = {
+        ...originalItem,
+        eppId: matchedEpp?.id || originalItem.eppId,
+        eppName: matchedEpp?.name || originalItem.eppName,
+        eppSize: newSize || originalItem.eppSize || extractSize(originalItem.eppName) || '',
+        quantity: newQuantity
+      };
+
+      currentItems[editingHistoryItem.itemIndex] = nextItem;
+      const batch = writeBatch(db);
+      batch.update(doc(db, 'deliveries', targetDelivery.id), {
+        items: currentItems,
+        updatedAt: serverTimestamp(),
+        editedByEmail: user?.email || '',
+      });
+
+      if (originalItem.eppId === nextItem.eppId) {
+        const quantityDelta = (originalItem.quantity || 1) - newQuantity;
+        if (quantityDelta !== 0) {
+          batch.update(doc(db, 'epp_catalog', originalItem.eppId), { stock: increment(quantityDelta) });
+        }
+      } else {
+        batch.update(doc(db, 'epp_catalog', originalItem.eppId), { stock: increment(originalItem.quantity || 1) });
+        batch.update(doc(db, 'epp_catalog', nextItem.eppId), { stock: increment(-newQuantity) });
+      }
+
+      await batch.commit();
+      setDeliveries(prev => prev.map(delivery => (
+        delivery.id === targetDelivery.id ? { ...delivery, items: currentItems } : delivery
+      )));
+      setFullEppCatalog([]);
+      setEditingHistoryItem(null);
+      setSuccessMessage('Historial actualizado e inventario ajustado.');
+      setTimeout(() => setSuccessMessage(''), 3000);
+    } catch (err) {
+      console.error('Error editing history item:', err);
+      setErrorMessage('Error al editar el historial: ' + (err instanceof Error ? err.message : String(err)));
     } finally {
       setIsSubmitting(false);
     }
@@ -2751,6 +2853,7 @@ function AppContent() {
                       <th className="px-6 py-4 font-medium text-center">Cant.</th>
                       <th className="px-6 py-4 font-medium">Tipo</th>
                       <th className="px-6 py-4 font-medium">Firma</th>
+                      <th className="px-6 py-4 font-medium text-right">Acciones</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
@@ -2854,11 +2957,30 @@ function AppContent() {
                         <td className="px-6 py-4">
                           <img src={delivery.signature} alt="Firma" className="h-8 object-contain opacity-70 hover:opacity-100 transition-opacity" />
                         </td>
+                        <td className="px-6 py-4 text-right">
+                          {isAdmin && (
+                            <button
+                              onClick={() => setEditingHistoryItem({
+                                deliveryId: delivery.id!,
+                                itemIndex: delivery.flattenedIndex || 0,
+                                eppId: delivery.flattenedItem.eppId,
+                                eppName: delivery.flattenedItem.eppName,
+                                eppSize: delivery.flattenedItem.eppSize || extractSize(delivery.flattenedItem.eppName) || '',
+                                quantity: delivery.flattenedItem.quantity || 1
+                              })}
+                              className="inline-flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-100 transition-colors"
+                              title="Editar cantidad o talla"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                              Editar
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     ))}
                     {filteredDeliveries.length === 0 && (
                       <tr>
-                        <td colSpan={9} className="px-6 py-12 text-center text-slate-400">
+                        <td colSpan={10} className="px-6 py-12 text-center text-slate-400">
                           No se han registrado entregas aún.
                         </td>
                       </tr>
@@ -4005,6 +4127,77 @@ function AppContent() {
         </AnimatePresence>
 
         {/* Modales Globales */}
+        <AnimatePresence>
+          {editingHistoryItem && (
+            <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="bg-white rounded-3xl shadow-2xl p-8 max-w-md w-full"
+              >
+                <h3 className="text-2xl font-bold mb-2 text-slate-900">Editar entrega</h3>
+                <p className="text-sm text-slate-500 mb-6">
+                  Ajusta cantidad o talla. El inventario se actualiza automÃ¡ticamente al guardar.
+                </p>
+
+                <div className="space-y-4 mb-8">
+                  <div className="p-4 rounded-2xl bg-slate-50 border border-slate-100">
+                    <p className="text-xs text-slate-400 uppercase font-bold">Equipo</p>
+                    <p className="font-semibold text-slate-900">{editingHistoryItem.eppName}</p>
+                    <p className="text-xs text-slate-500 font-mono mt-1">{editingHistoryItem.eppId}</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-2">Cantidad entregada</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={editingHistoryItem.quantity}
+                        onChange={(e) => setEditingHistoryItem({
+                          ...editingHistoryItem,
+                          quantity: Math.max(0, Number(e.target.value) || 0)
+                        })}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-2">Talla</label>
+                      <input
+                        type="text"
+                        value={editingHistoryItem.eppSize}
+                        onChange={(e) => setEditingHistoryItem({
+                          ...editingHistoryItem,
+                          eppSize: e.target.value.toUpperCase()
+                        })}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setEditingHistoryItem(null)}
+                    disabled={isSubmitting}
+                    className="flex-1 py-3 px-4 rounded-xl text-slate-600 font-medium hover:bg-slate-50 transition-colors disabled:opacity-50"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={handleSaveHistoryItemEdit}
+                    disabled={isSubmitting}
+                    className="flex-1 bg-indigo-600 text-white font-semibold py-3 px-4 rounded-xl hover:bg-indigo-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    Guardar
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
         <AnimatePresence>
           {deliveryWarning && (
             <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
