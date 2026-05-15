@@ -1,12 +1,12 @@
 node_modules
 dist
-data
+data/*
+!data/epp-control.sqlite
+data/backups
 .tools
 .git
 .dev-*.log
 .vite-*.log
-*.sqlite
 *.sqlite-shm
 *.sqlite-wal
 npm-debug.log*
-Dockerfile

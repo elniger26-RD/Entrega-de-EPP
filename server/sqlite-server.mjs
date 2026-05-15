@@ -8,6 +8,7 @@ import { open } from 'sqlite';
 const ROOT = path.resolve(import.meta.dirname, '..');
 const DATA_DIR = path.join(ROOT, 'data');
 const DB_PATH = process.env.SQLITE_DB_PATH || path.join(DATA_DIR, 'epp-control.sqlite');
+const SEED_DB_PATH = path.join(ROOT, 'seed', 'epp-control.sqlite');
 const PORT = Number(process.env.PORT || process.env.API_PORT || 3001);
 const SUPERADMIN_EMAIL = 'elniger26@gmail.com';
 const DEFAULT_ADMIN_PASSWORD = process.env.SQLITE_ADMIN_PASSWORD || 'Admin123!';
@@ -24,6 +25,43 @@ const DEFAULT_DELIVERY_USERS = [
 ];
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
+
+async function seedDatabaseIfNeeded() {
+  if (!fs.existsSync(SEED_DB_PATH)) return;
+
+  let shouldSeed = !fs.existsSync(DB_PATH);
+  if (!shouldSeed) {
+    let existingDb;
+    try {
+      existingDb = await open({
+        filename: DB_PATH,
+        driver: sqlite3.Database,
+      });
+      const table = await existingDb.get(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'documents'",
+      );
+      if (!table) {
+        shouldSeed = true;
+      } else {
+        const deliveryCount = await existingDb.get(
+          "SELECT COUNT(*) AS count FROM documents WHERE collection_name = 'deliveries'",
+        );
+        shouldSeed = Number(deliveryCount?.count || 0) === 0;
+      }
+    } catch {
+      shouldSeed = true;
+    } finally {
+      await existingDb?.close();
+    }
+  }
+
+  if (shouldSeed) {
+    fs.copyFileSync(SEED_DB_PATH, DB_PATH);
+    console.log(`Seeded SQLite database from ${SEED_DB_PATH}`);
+  }
+}
+
+await seedDatabaseIfNeeded();
 
 const db = await open({
   filename: DB_PATH,

@@ -24,6 +24,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --legacy-peer-deps && npm cache clean --force
 
 COPY server ./server
+COPY data/epp-control.sqlite ./seed/epp-control.sqlite
 COPY --from=build /app/dist ./dist
 
 RUN mkdir -p /app/data
