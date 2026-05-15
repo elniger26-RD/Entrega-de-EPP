@@ -45,6 +45,10 @@ function setSession(token: string | null, user: User | null) {
   listeners.forEach(listener => listener(user));
 }
 
+export function clearAuthSession() {
+  setSession(null, null);
+}
+
 export function getAuthToken() {
   return localStorage.getItem(TOKEN_KEY);
 }

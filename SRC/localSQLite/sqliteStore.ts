@@ -1,4 +1,4 @@
-import { getAuthToken } from './auth';
+import { clearAuthSession, getAuthToken } from './auth';
 
 type Filter = { field: string; op: string; value: any };
 type Order = { field: string; direction: 'asc' | 'desc' };
@@ -40,6 +40,9 @@ async function api(path: string, options: RequestInit = {}) {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401) {
+      clearAuthSession();
+    }
     throw new Error(body.error || 'Error de base de datos SQLite');
   }
   return reviveDates(body);
