@@ -224,6 +224,10 @@ interface Delivery {
   type: 'nuevo' | 'reemplazo';
   date: any;
   signature: string;
+  createdByEmail?: string;
+  createdByName?: string;
+  createdAt?: any;
+  source?: string;
 }
 
 // --- MOCK DATE FOR TESTING ---
@@ -925,7 +929,11 @@ function AppContent() {
             items: [],
             type,
             date,
-            signature
+            signature,
+            createdByEmail: user?.email || '',
+            createdByName: user?.displayName || user?.email || '',
+            createdAt: serverTimestamp(),
+            source: 'excel-import'
           });
         }
 
@@ -1304,8 +1312,8 @@ function AppContent() {
       };
       checkDb();
 
-      // Fetch Deliveries (Keep this real-time as it's usually fewer items or we can limit it)
-      const q = query(collection(db, 'deliveries'), orderBy('date', 'desc'), limit(100));
+      // Fetch enough deliveries to show the full imported history without hiding older rows.
+      const q = query(collection(db, 'deliveries'), orderBy('date', 'desc'), limit(5000));
       const unsubscribeDeliveries = onSnapshot(q, { includeMetadataChanges: true }, (snapshot) => {
         const items = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Delivery));
         setDeliveries(items);
@@ -1785,7 +1793,10 @@ function AppContent() {
         })),
         type: deliveryType,
         date: MOCK_DATE_ENABLED ? getNow() : serverTimestamp(),
-        signature: signatureData || ''
+        signature: signatureData || '',
+        createdByEmail: user?.email || '',
+        createdByName: user?.displayName || user?.email || '',
+        createdAt: serverTimestamp()
       };
 
       const deliveryId = `delivery-${Date.now()}-${crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
