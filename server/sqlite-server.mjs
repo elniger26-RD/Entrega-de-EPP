@@ -11,6 +11,17 @@ const DB_PATH = process.env.SQLITE_DB_PATH || path.join(DATA_DIR, 'epp-control.s
 const PORT = Number(process.env.PORT || process.env.API_PORT || 3001);
 const SUPERADMIN_EMAIL = 'elniger26@gmail.com';
 const DEFAULT_ADMIN_PASSWORD = process.env.SQLITE_ADMIN_PASSWORD || 'Admin123!';
+const DEFAULT_DELIVERY_PASSWORD = process.env.SQLITE_DELIVERY_PASSWORD || 'Marcos2026!';
+const DEFAULT_DELIVERY_USERS = [
+  {
+    email: 'marcosmartinezparedes077@gmail.com',
+    name: 'Marcos Martinez Paredes',
+  },
+  {
+    email: 'marcosmartenezparedes077@gmail.com',
+    name: 'Marcos Martinez Paredes',
+  },
+];
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -224,6 +235,30 @@ async function ensureBootstrapData() {
     nowIso(),
     nowIso(),
   );
+
+  for (const deliveryUser of DEFAULT_DELIVERY_USERS) {
+    const email = normalizeEmail(deliveryUser.email);
+    const { salt: userSalt, hash: userHash } = hashPassword(DEFAULT_DELIVERY_PASSWORD);
+    await db.run(
+      `INSERT INTO local_users (email, name, password_hash, salt, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(email) DO NOTHING`,
+      email,
+      deliveryUser.name,
+      userHash,
+      userSalt,
+      nowIso(),
+      nowIso(),
+    );
+
+    await putDocument('authorized_users', email, {
+      id: email,
+      email,
+      role: 'user',
+      name: deliveryUser.name,
+      createdAt: nowIso(),
+    }, true);
+  }
 
   await putDocument('authorized_users', SUPERADMIN_EMAIL, {
     id: SUPERADMIN_EMAIL,
