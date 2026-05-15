@@ -66,7 +66,7 @@ Usa el `Dockerfile` incluido.
 Configuracion recomendada:
 
 - Build Pack: Dockerfile
-- Puerto interno: `3001`
+- Puerto interno: `3000`
 - Volumen persistente: `/app/data`
 - Healthcheck: `/api/health`
 
