@@ -583,7 +583,7 @@ function AppContent() {
   const poloRegex = /\b(polo|poloshirt|polo-shirt|shirt|camisa|t-?shirt)\b/i;
   const pantsRegex = /\b(pantal[oó]n|pantalones|pants?)\b/i;
   const uniformRegex = /\b(uniforme|polo|poloshirt|polo-shirt|shirt|camisa|t-?shirt|pantal[oó]n|pantalones|pants?)\b/i;
-  type FrequencyAlert = { kind: 'boots' | 'gloves' | 'general' | 'uniform'; date: Date; message: string; itemName?: string };
+  type FrequencyAlert = { kind: 'boots' | 'gloves' | 'general' | 'uniform'; date: Date; message: string; itemName?: string; previousItemName?: string };
   type DeliveryAlertInfo = {
     boots?: Date;
     gloves?: Date;
@@ -615,6 +615,15 @@ function AppContent() {
   };
   const diffInDays = (later: Date, earlier: Date) => Math.floor(Math.abs(later.getTime() - earlier.getTime()) / (1000 * 60 * 60 * 24));
   const getDeliveryItemKey = (item: { eppId?: string; eppName?: string; name?: string }, index = 0) => `${item.eppId || item.eppName || item.name || 'item'}-${index}`;
+  const getPolicyMatchItem = (delivery: Delivery, policy: ReturnType<typeof getPolicyForEppName>) => {
+    if (!policy) return null;
+    return (delivery.items || []).find((item: any) => {
+      const prevPolicy = getPolicyForEppName(item.eppName);
+      if (!prevPolicy) return false;
+      if (policy.kind === 'gloves') return prevPolicy.label === policy.label;
+      return prevPolicy.kind === policy.kind;
+    }) || null;
+  };
   const appendItemAlert = (alerts: DeliveryAlertInfo, itemKey: string, alert: FrequencyAlert) => {
     alerts.itemAlerts = alerts.itemAlerts || {};
     alerts.itemAlerts[itemKey] = [...(alerts.itemAlerts[itemKey] || []), alert];
@@ -652,6 +661,7 @@ function AppContent() {
           if (uniformFamily) {
             let recentUniformQty = 0;
             let lastUniformDate: Date | null = null;
+            let lastUniformItemName = '';
             for (let j = i - 1; j >= 0 && sorted[j].employeeId === current.employeeId; j--) {
               const prevDate = new Date(getDate(sorted[j].date));
               const days = diffInDays(new Date(currDate), prevDate);
@@ -659,7 +669,10 @@ function AppContent() {
               (sorted[j].items || []).forEach((prevItem: any) => {
                 if (getUniformFamily(prevItem.eppName) === uniformFamily) {
                   recentUniformQty += prevItem.quantity || 1;
-                  if (!lastUniformDate || prevDate > lastUniformDate) lastUniformDate = prevDate;
+                  if (!lastUniformDate || prevDate > lastUniformDate) {
+                    lastUniformDate = prevDate;
+                    lastUniformItemName = prevItem.eppName;
+                  }
                 }
               });
             }
@@ -668,7 +681,8 @@ function AppContent() {
                 kind: 'uniform',
                 date: lastUniformDate,
                 itemName: currItem.eppName,
-                message: `Uniforme: supera 2 unidades recientes de ${uniformFamily === 'polo' ? 'polo/camisa' : uniformFamily}.`
+                previousItemName: lastUniformItemName,
+                message: `UNIFORME: EPP entregado "${currItem.eppName}" supera 2 unidades recientes de ${uniformFamily === 'polo' ? 'polo/camisa' : uniformFamily}. Entrega anterior relacionada: "${lastUniformItemName || 'uniforme'}".`
               });
             }
             return;
@@ -677,16 +691,12 @@ function AppContent() {
           if (!policy) return;
 
           let lastMatchingDelivery: Delivery | null = null;
+          let lastMatchingItemName = '';
           for (let j = i - 1; j >= 0 && sorted[j].employeeId === current.employeeId; j--) {
-            if ((sorted[j].items || []).some((prevItem: any) => {
-              const prevPolicy = getPolicyForEppName(prevItem.eppName);
-              if (!prevPolicy) return false;
-              if (policy.kind === 'gloves') {
-                return policy.label === prevPolicy.label;
-              }
-              return policy.kind === prevPolicy.kind;
-            })) {
+            const matchingItem = getPolicyMatchItem(sorted[j], policy);
+            if (matchingItem) {
               lastMatchingDelivery = sorted[j];
+              lastMatchingItemName = matchingItem.eppName;
               break;
             }
           }
@@ -699,7 +709,8 @@ function AppContent() {
                 kind: policy.kind,
                 date: lastDate,
                 itemName: currItem.eppName,
-                message: `${policy.label}: entrega anterior hace ${days === 0 ? '0' : days} días.`
+                previousItemName: lastMatchingItemName,
+                message: `${policy.label}: EPP entregado "${currItem.eppName}" genera alerta por entrega anterior relacionada "${lastMatchingItemName || policy.label}" hace ${days === 0 ? '0' : days} dias.`
               });
             }
           }
@@ -1315,40 +1326,38 @@ function AppContent() {
           if (uniformFamily) {
             let recentUniformQty = 0;
             let lastUniformDate: Date | null = null;
+            let lastUniformItemName = '';
             history.forEach(delivery => {
               const days = diffInDays(now, delivery.date as any);
               if (days >= 45) return;
               (delivery.items || []).forEach((item: any) => {
                 if (getUniformFamily(item.eppName) === uniformFamily) {
                   recentUniformQty += item.quantity || 1;
-                  if (!lastUniformDate || delivery.date > lastUniformDate) lastUniformDate = delivery.date as any;
+                  if (!lastUniformDate || delivery.date > lastUniformDate) {
+                    lastUniformDate = delivery.date as any;
+                    lastUniformItemName = item.eppName;
+                  }
                 }
               });
             });
             if (recentUniformQty + quantity > 2 && lastUniformDate) {
               alerts.uniform = lastUniformDate;
-              alerts.messages!.push(`Uniforme: supera 2 unidades recientes de ${uniformFamily === 'polo' ? 'polo/camisa' : uniformFamily}.`);
+              alerts.messages!.push(`UNIFORME: EPP entregado "${epp.name}" supera 2 unidades recientes de ${uniformFamily === 'polo' ? 'polo/camisa' : uniformFamily}. Entrega anterior relacionada: "${lastUniformItemName || 'uniforme'}".`);
             }
             return;
           }
 
           if (!policy) return;
-          const lastMatching = history.find(delivery =>
-            (delivery.items || []).some((item: any) => {
-              const prevPolicy = getPolicyForEppName(item.eppName);
-              if (!prevPolicy) return false;
-              if (policy.kind === 'gloves') return prevPolicy.label === policy.label;
-              return prevPolicy.kind === policy.kind;
-            })
-          );
+          const lastMatching = history.find(delivery => getPolicyMatchItem(delivery, policy));
 
           if (lastMatching) {
+            const matchingItem = getPolicyMatchItem(lastMatching, policy);
             const days = diffInDays(now, lastMatching.date as any);
             if (days < policy.days) {
               if (policy.kind === 'boots') alerts.boots = lastMatching.date as any;
               if (policy.kind === 'gloves') alerts.gloves = lastMatching.date as any;
               if (policy.kind === 'general') alerts.general = lastMatching.date as any;
-              alerts.messages!.push(`${policy.label}: entrega anterior hace ${days === 0 ? '0' : days} días. Periodo mínimo: ${policy.days} días.`);
+              alerts.messages!.push(`${policy.label}: EPP entregado "${epp.name}" genera alerta por entrega anterior relacionada "${matchingItem?.eppName || policy.label}" hace ${days === 0 ? '0' : days} dias. Periodo minimo: ${policy.days} dias.`);
             }
           }
         });
@@ -1865,38 +1874,36 @@ function AppContent() {
         if (uniformFamily) {
           let recentUniformQty = 0;
           let lastUniformDate: Date | null = null;
+          let lastUniformItemName = '';
           deliveryHistory.forEach(delivery => {
             const days = diffInDays(now, delivery.date as any);
             if (days >= 45) return;
             (delivery.items || []).forEach((item: any) => {
               if (getUniformFamily(item.eppName) === uniformFamily) {
                 recentUniformQty += item.quantity || 1;
-                if (!lastUniformDate || delivery.date > lastUniformDate) lastUniformDate = delivery.date as any;
+                if (!lastUniformDate || delivery.date > lastUniformDate) {
+                  lastUniformDate = delivery.date as any;
+                  lastUniformItemName = item.eppName;
+                }
               }
             });
           });
 
           if (recentUniformQty + quantity > 2 && lastUniformDate) {
-            warnings.push(`ALERTA DE UNIFORME: "${epp.name}" supera 2 unidades recientes para este colaborador (${recentUniformQty} previas + ${quantity} actuales). Última entrega: ${lastUniformDate.toLocaleDateString()}.`);
+            warnings.push(`ALERTA DE UNIFORME: EPP entregado "${epp.name}" supera 2 unidades recientes para este colaborador (${recentUniformQty} previas + ${quantity} actuales). Entrega anterior relacionada: "${lastUniformItemName || 'uniforme'}" (${lastUniformDate.toLocaleDateString()}).`);
           }
           return;
         }
 
         if (!policy) return;
-        const lastMatchingDelivery = deliveryHistory.find(d =>
-          (d.items || []).some((item: any) => {
-            const prevPolicy = getPolicyForEppName(item.eppName);
-            if (!prevPolicy) return false;
-            if (policy.kind === 'gloves') return prevPolicy.label === policy.label;
-            return prevPolicy.kind === policy.kind;
-          })
-        );
+        const lastMatchingDelivery = deliveryHistory.find(d => getPolicyMatchItem(d, policy));
 
         if (lastMatchingDelivery) {
+          const matchingItem = getPolicyMatchItem(lastMatchingDelivery, policy);
           const diffDays = diffInDays(now, lastMatchingDelivery.date);
           if (diffDays < policy.days) {
             const when = diffDays === 0 ? 'HOY MISMO' : `hace ${diffDays} días`;
-            warnings.push(`ALERTA DE ${policy.label}: "${epp.name}" ya tuvo una entrega relacionada ${when} (${lastMatchingDelivery.date.toLocaleDateString()}). Periodo mínimo: ${policy.days} días.`);
+            warnings.push(`ALERTA DE ${policy.label}: EPP entregado "${epp.name}" genera alerta por entrega anterior relacionada "${matchingItem?.eppName || policy.label}" ${when} (${lastMatchingDelivery.date.toLocaleDateString()}). Periodo minimo: ${policy.days} dias.`);
           }
         }
       });
