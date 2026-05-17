@@ -859,11 +859,23 @@ function AppContent() {
         'Hora': time,
         'Empleado': alert.employeeName,
         'ID Empleado': alert.employeeId,
+        'EPP Entregado': getAlertItemsText(alert),
         'Alertas Detectadas': alertsText,
         'Estado': (alert.status || 'pendiente').toUpperCase()
       };
     });
     exportToExcel(data, 'alertas_sistema', 'Alertas');
+  };
+
+  const getAlertItemsText = (alert: any) => {
+    const items = Array.isArray(alert.items) ? alert.items : [];
+    if (items.length === 0) return '-';
+    return items.map((item: any) => {
+      const name = item.eppName || item.name || item.equipo || 'EPP sin nombre';
+      const size = item.eppSize || item.size || extractSize(name) || '-';
+      const quantity = item.quantity || 1;
+      return `${name} | Talla: ${size} | Cant: ${quantity}`;
+    }).join(' / ');
   };
 
   const readImportCell = (row: Record<string, any>, labels: string[]) => {
@@ -2785,6 +2797,10 @@ function AppContent() {
                           </td>
                           <td className="px-6 py-4">
                             <div className="space-y-1">
+                              <div className="mb-2 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2">
+                                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400 mb-1">EPP entregado</p>
+                                <p className="text-xs font-semibold text-slate-700 leading-relaxed">{getAlertItemsText(alert)}</p>
+                              </div>
                               {alert.warnings.map((w: string, i: number) => (
                                 <div key={i} className="text-xs text-amber-700 flex items-start gap-1">
                                   <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
@@ -2818,7 +2834,7 @@ function AppContent() {
                                 </button>
                               )}
                               <a 
-                                href={`mailto:w.medinaconsorcio@gmail.com?subject=ALERTA EPP: ${alert.employeeName}&body=Empleado: ${alert.employeeName} (ID: ${alert.employeeId})%0D%0AFecha: ${new Date(getDate(alert.date)).toLocaleString()}%0D%0A%0D%0AAlertas:%0D%0A${alert.warnings.join('%0D%0A')}`}
+                                href={`mailto:w.medinaconsorcio@gmail.com?subject=ALERTA EPP: ${alert.employeeName}&body=Empleado: ${alert.employeeName} (ID: ${alert.employeeId})%0D%0AFecha: ${new Date(getDate(alert.date)).toLocaleString()}%0D%0AEPP entregado: ${getAlertItemsText(alert)}%0D%0A%0D%0AAlertas:%0D%0A${alert.warnings.join('%0D%0A')}`}
                                 className="p-2 bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 transition-colors"
                                 title="Enviar por correo manualmente"
                               >
