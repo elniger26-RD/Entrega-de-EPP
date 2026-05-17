@@ -877,6 +877,7 @@ function AppContent() {
       return `${name} | Talla: ${size} | Cant: ${quantity}`;
     }).join(' / ');
   };
+  const isStockAlertText = (message: string) => normalizeAlertText(message).includes('ALERTA DE STOCK');
 
   const readImportCell = (row: Record<string, any>, labels: string[]) => {
     const normalize = (value: string) => value
@@ -2802,7 +2803,7 @@ function AppContent() {
                                 <p className="text-xs font-semibold text-slate-700 leading-relaxed">{getAlertItemsText(alert)}</p>
                               </div>
                               {alert.warnings.map((w: string, i: number) => (
-                                <div key={i} className="text-xs text-amber-700 flex items-start gap-1">
+                                <div key={i} className={`text-xs flex items-start gap-1 ${isStockAlertText(w) ? 'text-rose-700' : 'text-amber-700'}`}>
                                   <AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />
                                   <span>{w}</span>
                                 </div>
@@ -4347,11 +4348,14 @@ function AppContent() {
                   <AlertCircle className="w-8 h-8 text-amber-600" />
                 </div>
                 <h3 className="text-2xl font-bold mb-2 text-center text-slate-900">Advertencia de Entrega</h3>
-                <p className="text-slate-600 text-center mb-8 leading-relaxed whitespace-pre-line">
-                  {deliveryWarning.message}
-                  <br /><br />
-                  <span className="font-bold text-slate-900">¿Desea continuar con la entrega?</span>
-                </p>
+                <div className="text-center mb-8 leading-relaxed space-y-3">
+                  {deliveryWarning.message.split('\n\n').map((message, index) => (
+                    <p key={index} className={isStockAlertText(message) ? 'text-rose-700 font-semibold' : 'text-slate-600'}>
+                      {message}
+                    </p>
+                  ))}
+                  <p className="font-bold text-slate-900">??Desea continuar con la entrega?</p>
+                </div>
                 
                 <div className="flex gap-3">
                   <button 
