@@ -402,9 +402,44 @@ function AppContent() {
   const [isDbEmpty, setIsDbEmpty] = useState(false);
   const [systemAlerts, setSystemAlerts] = useState<any[]>([]);
   const itemToEditRef = useRef<EPP | null>(null);
+  const [isAdminPinUnlocked, setIsAdminPinUnlocked] = useState(false);
+  const [showAdminPinModal, setShowAdminPinModal] = useState(false);
+  const [adminPin, setAdminPin] = useState('');
+  const [adminPinError, setAdminPinError] = useState('');
 
   const isAdmin = authorizedUsers.some(u => u.email.toLowerCase() === user?.email?.toLowerCase() && u.role === 'admin') || user?.email?.toLowerCase() === 'elniger26@gmail.com';
   const isAuthorized = authorizedUsers.some(u => u.email.toLowerCase() === user?.email?.toLowerCase()) || user?.email?.toLowerCase() === 'elniger26@gmail.com';
+  const openAdminTab = () => {
+    if (!isAdmin) return;
+    if (isAdminPinUnlocked) {
+      setActiveTab('setup');
+      return;
+    }
+    setAdminPin('');
+    setAdminPinError('');
+    setShowAdminPinModal(true);
+  };
+  const confirmAdminPin = () => {
+    if (adminPin.trim() !== '8616') {
+      setAdminPinError('Contraseña incorrecta');
+      return;
+    }
+    setIsAdminPinUnlocked(true);
+    setShowAdminPinModal(false);
+    setAdminPin('');
+    setAdminPinError('');
+    setActiveTab('setup');
+  };
+
+  useEffect(() => {
+    setIsAdminPinUnlocked(false);
+    setShowAdminPinModal(false);
+    setAdminPin('');
+    setAdminPinError('');
+    if (activeTab === 'setup') {
+      setActiveTab('delivery');
+    }
+  }, [user?.email]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -478,7 +513,7 @@ function AppContent() {
 
   const [userToDelete, setUserToDelete] = useState<AuthorizedUser | null>(null);
   const [deliveryWarning, setDeliveryWarning] = useState<{ message: string; onConfirm: () => void } | null>(null);
-  const [employeeAlerts, setEmployeeAlerts] = useState<{ boots?: Date; general?: Date } | null>(null);
+  const [employeeAlerts, setEmployeeAlerts] = useState<{ boots?: Date; gloves?: Date; general?: Date; uniform?: Date; messages?: string[] } | null>(null);
 
   const confirmDeleteUser = async () => {
     if (!userToDelete || !userToDelete.id) return;
@@ -542,6 +577,52 @@ function AppContent() {
   // Regex for EPP detection
   const bootsRegex = /\b(botas?|bot[ií]n(es)?|bota)/i;
   const glovesRegex = /\b(guantes?|guante)/i;
+  const beltRegex = /\b(fajas?|cintur[oó]n|belt|lumbar)\b/i;
+  const hyflexRegex = /\bhy\s*flex\b|\bhyflex\b/i;
+  const ciaRegex = /\bcia\b|c\.i\.a/i;
+  const poloRegex = /\b(polo|poloshirt|polo-shirt|shirt|camisa|t-?shirt)\b/i;
+  const pantsRegex = /\b(pantal[oó]n|pantalones|pants?)\b/i;
+  const uniformRegex = /\b(uniforme|polo|poloshirt|polo-shirt|shirt|camisa|t-?shirt|pantal[oó]n|pantalones|pants?)\b/i;
+  type FrequencyAlert = { kind: 'boots' | 'gloves' | 'general' | 'uniform'; date: Date; message: string; itemName?: string };
+  type DeliveryAlertInfo = {
+    boots?: Date;
+    gloves?: Date;
+    general?: Date;
+    uniform?: Date;
+    duplicate?: { name: string; date: Date };
+    itemAlerts?: Record<string, FrequencyAlert[]>;
+  };
+  const normalizeAlertText = (value: string) => String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+  const getUniformFamily = (name: string) => {
+    const normalized = normalizeAlertText(name);
+    if (poloRegex.test(normalized)) return 'polo';
+    if (pantsRegex.test(normalized)) return 'pantalon';
+    return uniformRegex.test(normalized) ? 'uniforme' : null;
+  };
+  const getPolicyForEppName = (name: string) => {
+    const normalized = normalizeAlertText(name);
+    if (bootsRegex.test(normalized)) return { kind: 'boots' as const, days: 180, label: 'BOTAS' };
+    if (glovesRegex.test(normalized)) {
+      if (hyflexRegex.test(normalized)) return { kind: 'gloves' as const, days: 15, label: 'GUANTES HYFLEX' };
+      if (ciaRegex.test(normalized)) return { kind: 'gloves' as const, days: 45, label: 'GUANTES CIA' };
+      return { kind: 'gloves' as const, days: 45, label: 'GUANTES' };
+    }
+    if (beltRegex.test(normalized)) return { kind: 'general' as const, days: 45, label: 'FAJA' };
+    return null;
+  };
+  const diffInDays = (later: Date, earlier: Date) => Math.floor(Math.abs(later.getTime() - earlier.getTime()) / (1000 * 60 * 60 * 24));
+  const getDeliveryItemKey = (item: { eppId?: string; eppName?: string; name?: string }, index = 0) => `${item.eppId || item.eppName || item.name || 'item'}-${index}`;
+  const appendItemAlert = (alerts: DeliveryAlertInfo, itemKey: string, alert: FrequencyAlert) => {
+    alerts.itemAlerts = alerts.itemAlerts || {};
+    alerts.itemAlerts[itemKey] = [...(alerts.itemAlerts[itemKey] || []), alert];
+    if (alert.kind === 'boots') alerts.boots = alert.date;
+    if (alert.kind === 'gloves') alerts.gloves = alert.date;
+    if (alert.kind === 'general') alerts.general = alert.date;
+    if (alert.kind === 'uniform') alerts.uniform = alert.date;
+  };
 
   // Pre-process deliveries to add alert info
   const deliveriesWithAlerts = React.useMemo(() => {
@@ -553,84 +634,76 @@ function AppContent() {
       return dateA - dateB; // Ascending for easier "previous" lookup
     });
 
-    const alertMap = new Map<string, { boots?: Date; gloves?: Date; general?: Date; duplicate?: { name: string; date: Date } }>();
+    const alertMap = new Map<string, DeliveryAlertInfo>();
     
     for (let i = 0; i < sorted.length; i++) {
       const current = sorted[i];
       const currDate = getDate(current.date);
       
-      const alerts: { boots?: Date; gloves?: Date; general?: Date; duplicate?: { name: string; date: Date } } = {};
+      const alerts: DeliveryAlertInfo = {};
       
-      // 1. Check for exact same EPP repeat (Duplicate)
       if (current.items) {
-        for (const currItem of current.items) {
-          let lastSame = null;
+        current.items.forEach((currItem: any, itemIndex: number) => {
+          const currentQty = currItem.quantity || 1;
+          const itemKey = getDeliveryItemKey(currItem, itemIndex);
+          const policy = getPolicyForEppName(currItem.eppName);
+          const uniformFamily = getUniformFamily(currItem.eppName);
+
+          if (uniformFamily) {
+            let recentUniformQty = 0;
+            let lastUniformDate: Date | null = null;
+            for (let j = i - 1; j >= 0 && sorted[j].employeeId === current.employeeId; j--) {
+              const prevDate = new Date(getDate(sorted[j].date));
+              const days = diffInDays(new Date(currDate), prevDate);
+              if (days >= 45) continue;
+              (sorted[j].items || []).forEach((prevItem: any) => {
+                if (getUniformFamily(prevItem.eppName) === uniformFamily) {
+                  recentUniformQty += prevItem.quantity || 1;
+                  if (!lastUniformDate || prevDate > lastUniformDate) lastUniformDate = prevDate;
+                }
+              });
+            }
+            if (recentUniformQty + currentQty > 2 && lastUniformDate) {
+              appendItemAlert(alerts, itemKey, {
+                kind: 'uniform',
+                date: lastUniformDate,
+                itemName: currItem.eppName,
+                message: `Uniforme: supera 2 unidades recientes de ${uniformFamily === 'polo' ? 'polo/camisa' : uniformFamily}.`
+              });
+            }
+            return;
+          }
+
+          if (!policy) return;
+
+          let lastMatchingDelivery: Delivery | null = null;
           for (let j = i - 1; j >= 0 && sorted[j].employeeId === current.employeeId; j--) {
-            if (sorted[j].items?.some((prevItem: any) => prevItem.eppId === currItem.eppId)) {
-              lastSame = sorted[j];
+            if ((sorted[j].items || []).some((prevItem: any) => {
+              const prevPolicy = getPolicyForEppName(prevItem.eppName);
+              if (!prevPolicy) return false;
+              if (policy.kind === 'gloves') {
+                return policy.label === prevPolicy.label;
+              }
+              return policy.kind === prevPolicy.kind;
+            })) {
+              lastMatchingDelivery = sorted[j];
               break;
             }
           }
-          
-          if (lastSame) {
-            const lastDate = getDate(lastSame.date);
-            const diffDays = (currDate - lastDate) / (1000 * 60 * 60 * 24);
-            if (diffDays < 45) { // Any repeat within 45 days (including same day)
-              alerts.duplicate = { name: currItem.eppName, date: new Date(lastDate) };
-              break;
+
+          if (lastMatchingDelivery) {
+            const lastDate = new Date(getDate(lastMatchingDelivery.date));
+            const days = diffInDays(new Date(currDate), lastDate);
+            if (days < policy.days) {
+              appendItemAlert(alerts, itemKey, {
+                kind: policy.kind,
+                date: lastDate,
+                itemName: currItem.eppName,
+                message: `${policy.label}: entrega anterior hace ${days === 0 ? '0' : days} días.`
+              });
             }
           }
-        }
-      }
-
-      // 2. Boots alert (< 180 days)
-      const isDeliveringBoots = current.items && current.items.some((item: any) => bootsRegex.test(item.eppName));
-      if (isDeliveringBoots) {
-        let lastBoots = null;
-        for (let j = i - 1; j >= 0 && sorted[j].employeeId === current.employeeId; j--) {
-          if (sorted[j].items && sorted[j].items.some((item: any) => bootsRegex.test(item.eppName))) {
-            lastBoots = sorted[j];
-            break;
-          }
-        }
-        
-        if (lastBoots) {
-          const lastBootsDate = getDate(lastBoots.date);
-          const diffBootsDays = (currDate - lastBootsDate) / (1000 * 60 * 60 * 24);
-          if (diffBootsDays < 180) {
-            alerts.boots = new Date(lastBootsDate);
-          }
-        }
-      }
-
-      // 3. Gloves alert (< 45 days)
-      const isDeliveringGloves = current.items && current.items.some((item: any) => glovesRegex.test(item.eppName));
-      if (isDeliveringGloves) {
-        let lastGloves = null;
-        for (let j = i - 1; j >= 0 && sorted[j].employeeId === current.employeeId; j--) {
-          if (sorted[j].items && sorted[j].items.some((item: any) => glovesRegex.test(item.eppName))) {
-            lastGloves = sorted[j];
-            break;
-          }
-        }
-        
-        if (lastGloves) {
-          const lastGlovesDate = getDate(lastGloves.date);
-          const diffGlovesDays = (currDate - lastGlovesDate) / (1000 * 60 * 60 * 24);
-          if (diffGlovesDays < 45) {
-            alerts.gloves = new Date(lastGlovesDate);
-          }
-        }
-      }
-
-      // 4. General frequency alert (Any EPP < 45 days, different day) - Only if not already alerted
-      const prev = i > 0 && sorted[i-1].employeeId === current.employeeId ? sorted[i-1] : null;
-      if (prev) {
-        const prevDate = getDate(prev.date);
-        const diffDays = (currDate - prevDate) / (1000 * 60 * 60 * 24);
-        if (isDifferentDay(currDate, prevDate) && diffDays < 45 && !alerts.duplicate && !alerts.gloves) {
-          alerts.general = new Date(prevDate);
-        }
+        });
       }
       
       if (Object.keys(alerts).length > 0 && current.id) {
@@ -730,6 +803,8 @@ function AppContent() {
       let alertText = '-';
       if (d.alerts) {
         const alerts = [];
+        const itemAlerts = d.alerts.itemAlerts?.[getDeliveryItemKey(item, d.flattenedIndex || 0)] || [];
+        itemAlerts.forEach((itemAlert: FrequencyAlert) => alerts.push(itemAlert.message));
         if (d.alerts.duplicate && d.alerts.duplicate.name === item.eppName) alerts.push(`REPETIDO: ${item.eppName}`);
         if (d.alerts.boots && bootsRegex.test(item.eppName)) alerts.push('BOTAS');
         if (d.alerts.gloves && glovesRegex.test(item.eppName)) alerts.push('GUANTES');
@@ -1229,55 +1304,56 @@ function AppContent() {
           return { ...data, date: dateObj } as Delivery;
         });
 
-        const sixMonthsAgo = getNow();
-        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+        const now = getNow();
+        const alerts: { boots?: Date; gloves?: Date; general?: Date; uniform?: Date; messages?: string[] } = { messages: [] };
 
-        const fortyFiveDaysAgo = getNow();
-        fortyFiveDaysAgo.setDate(fortyFiveDaysAgo.getDate() - 45);
-
-        const alerts: { boots?: Date; general?: Date } = {};
-
-        const isDeliveringBoots = selectedEpps.some(epp => bootsRegex.test(epp.name));
-        const isDeliveringGloves = selectedEpps.some(epp => glovesRegex.test(epp.name));
-
-        // Check boots only if delivering boots
-        if (isDeliveringBoots) {
-          const lastBoots = history.find(d => 
-            d.items && d.items.some((item: any) => bootsRegex.test(item.eppName))
-          );
-          if (lastBoots && lastBoots.date > sixMonthsAgo) {
-            alerts.boots = lastBoots.date;
-          }
-        }
-
-        // Check general frequency (45 days) for items being delivered
-        // This includes gloves and any other item that might have been delivered before
         selectedEpps.forEach(epp => {
-          const lastSameEpp = history.find(d => 
-            d.items && d.items.some((item: any) => item.eppId === epp.id)
-          );
-          
-          // If it's the same exact EPP, check 45 days
-          if (lastSameEpp && lastSameEpp.date > fortyFiveDaysAgo) {
-            if (!alerts.general || lastSameEpp.date > alerts.general) {
-              alerts.general = lastSameEpp.date;
+          const quantity = epp.quantity || 1;
+          const policy = getPolicyForEppName(epp.name);
+          const uniformFamily = getUniformFamily(epp.name);
+
+          if (uniformFamily) {
+            let recentUniformQty = 0;
+            let lastUniformDate: Date | null = null;
+            history.forEach(delivery => {
+              const days = diffInDays(now, delivery.date as any);
+              if (days >= 45) return;
+              (delivery.items || []).forEach((item: any) => {
+                if (getUniformFamily(item.eppName) === uniformFamily) {
+                  recentUniformQty += item.quantity || 1;
+                  if (!lastUniformDate || delivery.date > lastUniformDate) lastUniformDate = delivery.date as any;
+                }
+              });
+            });
+            if (recentUniformQty + quantity > 2 && lastUniformDate) {
+              alerts.uniform = lastUniformDate;
+              alerts.messages!.push(`Uniforme: supera 2 unidades recientes de ${uniformFamily === 'polo' ? 'polo/camisa' : uniformFamily}.`);
             }
+            return;
           }
-          
-          // Special case for gloves category if not already caught by exact ID
-          if (glovesRegex.test(epp.name)) {
-            const lastGloves = history.find(d => 
-              d.items && d.items.some((item: any) => glovesRegex.test(item.eppName))
-            );
-            if (lastGloves && lastGloves.date > fortyFiveDaysAgo) {
-              if (!alerts.general || lastGloves.date > alerts.general) {
-                alerts.general = lastGloves.date;
-              }
+
+          if (!policy) return;
+          const lastMatching = history.find(delivery =>
+            (delivery.items || []).some((item: any) => {
+              const prevPolicy = getPolicyForEppName(item.eppName);
+              if (!prevPolicy) return false;
+              if (policy.kind === 'gloves') return prevPolicy.label === policy.label;
+              return prevPolicy.kind === policy.kind;
+            })
+          );
+
+          if (lastMatching) {
+            const days = diffInDays(now, lastMatching.date as any);
+            if (days < policy.days) {
+              if (policy.kind === 'boots') alerts.boots = lastMatching.date as any;
+              if (policy.kind === 'gloves') alerts.gloves = lastMatching.date as any;
+              if (policy.kind === 'general') alerts.general = lastMatching.date as any;
+              alerts.messages!.push(`${policy.label}: entrega anterior hace ${days === 0 ? '0' : days} días. Periodo mínimo: ${policy.days} días.`);
             }
           }
         });
 
-        setEmployeeAlerts(Object.keys(alerts).length > 0 ? alerts : null);
+        setEmployeeAlerts((alerts.messages || []).length > 0 ? alerts : null);
       } catch (err) {
         console.error("Error fetching employee alerts:", err);
       }
@@ -1750,12 +1826,6 @@ function AppContent() {
 
       // 1. Alerta por frecuencia de entrega
       const now = getNow();
-      const sixMonthsAgo = getNow();
-      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-
-      const fortyFiveDaysAgo = getNow();
-      fortyFiveDaysAgo.setDate(fortyFiveDaysAgo.getDate() - 45);
-
       const qHistory = query(
         collection(db, 'deliveries'),
         where('employeeId', '==', foundEmployee.id),
@@ -1785,67 +1855,51 @@ function AppContent() {
         return { ...data, date: dateObj } as Delivery;
       });
 
-      const isDeliveringBoots = selectedEpps.some(epp => bootsRegex.test(epp.name));
-      const isDeliveringGloves = selectedEpps.some(epp => glovesRegex.test(epp.name));
       const warnings: string[] = [];
 
-      // Check 0: Same EPP repeat (Duplicate) - Even same day
       selectedEpps.forEach(epp => {
-        const lastSameEpp = deliveryHistory.find(d => 
-          d.items && d.items.some((item: any) => item.eppId === epp.id)
+        const quantity = epp.quantity || 1;
+        const policy = getPolicyForEppName(epp.name);
+        const uniformFamily = getUniformFamily(epp.name);
+
+        if (uniformFamily) {
+          let recentUniformQty = 0;
+          let lastUniformDate: Date | null = null;
+          deliveryHistory.forEach(delivery => {
+            const days = diffInDays(now, delivery.date as any);
+            if (days >= 45) return;
+            (delivery.items || []).forEach((item: any) => {
+              if (getUniformFamily(item.eppName) === uniformFamily) {
+                recentUniformQty += item.quantity || 1;
+                if (!lastUniformDate || delivery.date > lastUniformDate) lastUniformDate = delivery.date as any;
+              }
+            });
+          });
+
+          if (recentUniformQty + quantity > 2 && lastUniformDate) {
+            warnings.push(`ALERTA DE UNIFORME: "${epp.name}" supera 2 unidades recientes para este colaborador (${recentUniformQty} previas + ${quantity} actuales). Última entrega: ${lastUniformDate.toLocaleDateString()}.`);
+          }
+          return;
+        }
+
+        if (!policy) return;
+        const lastMatchingDelivery = deliveryHistory.find(d =>
+          (d.items || []).some((item: any) => {
+            const prevPolicy = getPolicyForEppName(item.eppName);
+            if (!prevPolicy) return false;
+            if (policy.kind === 'gloves') return prevPolicy.label === policy.label;
+            return prevPolicy.kind === policy.kind;
+          })
         );
-        if (lastSameEpp) {
-          const lastDate = lastSameEpp.date.getTime();
-          const diffDays = Math.floor(Math.abs(now.getTime() - lastDate) / (1000 * 60 * 60 * 24));
-          
-          if (diffDays < 45) {
-            const dateStr = lastSameEpp.date.toLocaleString();
-            warnings.push(`⚠️ REPETICIÓN DE EQUIPO: El artículo "${epp.name}" ya fue entregado a este colaborador el ${dateStr} (${diffDays === 0 ? 'HOY MISMO' : `hace ${diffDays} días`}). El periodo mínimo es de 45 días.`);
+
+        if (lastMatchingDelivery) {
+          const diffDays = diffInDays(now, lastMatchingDelivery.date);
+          if (diffDays < policy.days) {
+            const when = diffDays === 0 ? 'HOY MISMO' : `hace ${diffDays} días`;
+            warnings.push(`ALERTA DE ${policy.label}: "${epp.name}" ya tuvo una entrega relacionada ${when} (${lastMatchingDelivery.date.toLocaleDateString()}). Periodo mínimo: ${policy.days} días.`);
           }
         }
       });
-
-      // Check 1: Boots < 6 months
-      if (isDeliveringBoots) {
-        const lastBootsDelivery = deliveryHistory.find(d => 
-          d.items && d.items.some((item: any) => bootsRegex.test(item.eppName))
-        );
-        
-        if (lastBootsDelivery && lastBootsDelivery.date > sixMonthsAgo) {
-          const diffTime = Math.abs(now.getTime() - lastBootsDelivery.date.getTime());
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-          const diffMonths = Math.floor(diffDays / 30);
-          
-          const timeMsg = diffDays === 0 ? 'HOY MISMO' : `hace solo ${diffMonths} meses y ${diffDays % 30} días`;
-          warnings.push(`⚠️ ALERTA DE BOTAS: Este colaborador recibió botas ${timeMsg} (${lastBootsDelivery.date.toLocaleDateString()}). El periodo recomendado es de 6 meses.`);
-        }
-      }
-
-      // Check 1.5: Gloves < 45 days
-      if (isDeliveringGloves) {
-        const lastGlovesDelivery = deliveryHistory.find(d => 
-          d.items && d.items.some((item: any) => glovesRegex.test(item.eppName))
-        );
-        
-        if (lastGlovesDelivery && lastGlovesDelivery.date > fortyFiveDaysAgo) {
-          const diffTime = Math.abs(now.getTime() - lastGlovesDelivery.date.getTime());
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-          
-          const timeMsg = diffDays === 0 ? 'HOY MISMO' : `hace solo ${diffDays} días`;
-          warnings.push(`⚠️ ALERTA DE GUANTES: Este colaborador recibió guantes ${timeMsg} (${lastGlovesDelivery.date.toLocaleDateString()}). El periodo recomendado es de 45 días.`);
-        }
-      }
-
-      // Check 2: Any EPP < 1.5 months (45 days) - Only if not already alerted by Check 0 or 1.5
-      if (deliveryHistory.length > 0 && warnings.length === 0) {
-        const lastDelivery = deliveryHistory[0];
-        if (lastDelivery.date > fortyFiveDaysAgo) {
-          const diffTime = Math.abs(now.getTime() - lastDelivery.date.getTime());
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-          
-          warnings.push(`⚠️ ALERTA DE FRECUENCIA: Este colaborador recibió EPP hace muy poco (${diffDays === 0 ? 'HOY MISMO' : `${diffDays} días`}, el ${lastDelivery.date.toLocaleDateString()}). El periodo mínimo recomendado es de 1.5 meses (45 días).`);
-        }
-      }
 
       // Check 3: Stock warning
       const lowStockItems = selectedEpps.filter(epp => (epp.stock - (epp.quantity || 1)) <= 10);
@@ -2197,7 +2251,7 @@ function AppContent() {
             </button>
             {isAdmin && (
               <button 
-                onClick={() => setActiveTab('setup')}
+                onClick={openAdminTab}
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'setup' ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-100'}`}
               >
                 <Settings className="w-4 h-4" />
@@ -2242,7 +2296,7 @@ function AppContent() {
               </div>
             </div>
             <button 
-              onClick={() => setActiveTab('setup')}
+              onClick={openAdminTab}
               className="bg-amber-600 text-white text-xs font-bold px-4 py-2 rounded-lg hover:bg-amber-700 transition-colors whitespace-nowrap"
             >
               Ir a Configuración
@@ -2373,6 +2427,12 @@ function AppContent() {
 
                       {employeeAlerts && (
                         <div className="mt-4 p-3 bg-amber-50 border border-amber-100 rounded-xl space-y-2">
+                          {(employeeAlerts.messages || []).map((message, index) => (
+                            <div key={index} className="flex items-start gap-2 text-amber-800 text-xs">
+                              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                              <p>{message}</p>
+                            </div>
+                          ))}
                           {employeeAlerts.boots && (
                             <div className="flex items-start gap-2 text-amber-800 text-xs">
                               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -2872,6 +2932,18 @@ function AppContent() {
                         <td className="px-6 py-4">
                           {delivery.alerts ? (
                             <div className="flex flex-col gap-2">
+                              {(delivery.alerts.itemAlerts?.[getDeliveryItemKey(delivery.flattenedItem, delivery.flattenedIndex || 0)] || []).map((itemAlert: FrequencyAlert, index: number) => (
+                                <div key={`${itemAlert.kind}-${index}`} className="flex flex-col border-l-2 border-amber-200 pl-2">
+                                  <span className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded font-black flex items-center gap-1 w-fit">
+                                    <AlertCircle className="w-3 h-3" />
+                                    {itemAlert.kind === 'uniform' ? 'UNIFORME' : itemAlert.kind === 'boots' ? 'BOTAS' : itemAlert.kind === 'gloves' ? 'GUANTES' : 'FRECUENCIA'}
+                                  </span>
+                                  <div className="flex flex-col text-[9px] mt-0.5">
+                                    <span className="text-amber-600 font-bold">Actual: {new Date(getDate(delivery.date)).toLocaleDateString()}</span>
+                                    <span className="text-slate-400">Anterior: {itemAlert.date.toLocaleDateString()}</span>
+                                  </div>
+                                </div>
+                              ))}
                               {delivery.alerts.duplicate && delivery.alerts.duplicate.name === delivery.flattenedItem.eppName && (
                                 <div className="flex flex-col border-l-2 border-indigo-200 pl-2">
                                   <span className="text-[10px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded font-black flex items-center gap-1 w-fit">
@@ -2991,7 +3063,7 @@ function AppContent() {
             </motion.div>
           )}
 
-          {activeTab === 'setup' && (
+          {activeTab === 'setup' && isAdminPinUnlocked && (
             <motion.div 
               key="setup"
               initial={{ opacity: 0, y: 20 }}
@@ -4128,6 +4200,47 @@ function AppContent() {
 
         {/* Modales Globales */}
         <AnimatePresence>
+          {showAdminPinModal && (
+            <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="bg-white rounded-3xl shadow-2xl p-8 max-w-sm w-full"
+              >
+                <h3 className="text-2xl font-bold mb-2 text-slate-900">Acceso Admin</h3>
+                <p className="text-sm text-slate-500 mb-6">Ingrese la contraseña de 4 dígitos para realizar cambios administrativos.</p>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={adminPin}
+                  onChange={(e) => {
+                    setAdminPin(e.target.value.replace(/\D/g, '').slice(0, 4));
+                    setAdminPinError('');
+                  }}
+                  onKeyDown={(e) => e.key === 'Enter' && confirmAdminPin()}
+                  autoFocus
+                  className="w-full text-center text-2xl tracking-[0.5em] bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+                />
+                {adminPinError && <p className="mt-3 text-sm text-red-600">{adminPinError}</p>}
+                <div className="flex gap-3 mt-8">
+                  <button
+                    onClick={() => setShowAdminPinModal(false)}
+                    className="flex-1 py-3 px-4 rounded-xl text-slate-600 font-medium hover:bg-slate-50 transition-colors"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    onClick={confirmAdminPin}
+                    className="flex-1 bg-indigo-600 text-white font-semibold py-3 px-4 rounded-xl hover:bg-indigo-700 transition-colors"
+                  >
+                    Entrar
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
           {editingHistoryItem && (
             <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
               <motion.div
@@ -4309,7 +4422,7 @@ function AppContent() {
         </button>
         {isAdmin && (
           <button 
-            onClick={() => setActiveTab('setup')}
+            onClick={openAdminTab}
             className={`flex flex-col items-center gap-1 transition-colors ${activeTab === 'setup' ? 'text-indigo-600' : 'text-slate-400'}`}
           >
             <Settings className="w-6 h-6" />
