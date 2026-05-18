@@ -324,7 +324,11 @@ async function ensureBootstrapData() {
     await db.run(
       `INSERT INTO local_users (email, name, password_hash, salt, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(email) DO NOTHING`,
+       ON CONFLICT(email) DO UPDATE SET
+        name = excluded.name,
+        password_hash = excluded.password_hash,
+        salt = excluded.salt,
+        updated_at = excluded.updated_at`,
       email,
       deliveryUser.name,
       userHash,
@@ -357,6 +361,16 @@ await ensureBootstrapData();
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
+
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api') || req.path === '/' || req.path.endsWith('.html') || req.path === '/sw.js') {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
+  }
+  next();
+});
 
 app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
@@ -587,9 +601,16 @@ app.post('/api/batch', requireAuth, async (req, res, next) => {
 
 const DIST_DIR = path.join(ROOT, 'dist');
 if (fs.existsSync(DIST_DIR)) {
-  app.use(express.static(DIST_DIR));
+  app.use(express.static(DIST_DIR, {
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('.html') || filePath.endsWith('sw.js')) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+      }
+    },
+  }));
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api')) return next();
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.sendFile(path.join(DIST_DIR, 'index.html'));
   });
 }
