@@ -26,38 +26,82 @@ const DEFAULT_DELIVERY_USERS = [
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
+async function readDatabaseStats(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return { exists: false, hasDocumentsTable: false, documents: 0, deliveries: 0 };
+  }
+
+  let database;
+  try {
+    database = await open({
+      filename: filePath,
+      driver: sqlite3.Database,
+    });
+    const table = await database.get(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'documents'",
+    );
+    if (!table) {
+      return { exists: true, hasDocumentsTable: false, documents: 0, deliveries: 0 };
+    }
+
+    const documents = await database.get('SELECT COUNT(*) AS count FROM documents');
+    const deliveries = await database.get(
+      "SELECT COUNT(*) AS count FROM documents WHERE collection_name = 'deliveries'",
+    );
+    await database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+
+    return {
+      exists: true,
+      hasDocumentsTable: true,
+      documents: Number(documents?.count || 0),
+      deliveries: Number(deliveries?.count || 0),
+    };
+  } catch (error) {
+    console.warn(`Could not inspect SQLite database at ${filePath}:`, error.message);
+    return { exists: true, hasDocumentsTable: false, documents: 0, deliveries: 0 };
+  } finally {
+    await database?.close();
+  }
+}
+
+function removeSqliteSidecarFiles(filePath) {
+  for (const suffix of ['-wal', '-shm']) {
+    const sidecarPath = `${filePath}${suffix}`;
+    if (fs.existsSync(sidecarPath)) {
+      fs.rmSync(sidecarPath, { force: true });
+    }
+  }
+}
+
+function backupDatabase(filePath) {
+  if (!fs.existsSync(filePath)) return;
+
+  const backupDir = path.join(DATA_DIR, 'backups');
+  fs.mkdirSync(backupDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(backupDir, `epp-control-before-seed-${timestamp}.sqlite`);
+  fs.copyFileSync(filePath, backupPath);
+  console.log(`Backed up existing SQLite database to ${backupPath}`);
+}
+
 async function seedDatabaseIfNeeded() {
   if (!fs.existsSync(SEED_DB_PATH)) return;
 
-  let shouldSeed = !fs.existsSync(DB_PATH);
-  if (!shouldSeed) {
-    let existingDb;
-    try {
-      existingDb = await open({
-        filename: DB_PATH,
-        driver: sqlite3.Database,
-      });
-      const table = await existingDb.get(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'documents'",
-      );
-      if (!table) {
-        shouldSeed = true;
-      } else {
-        const deliveryCount = await existingDb.get(
-          "SELECT COUNT(*) AS count FROM documents WHERE collection_name = 'deliveries'",
-        );
-        shouldSeed = Number(deliveryCount?.count || 0) === 0;
-      }
-    } catch {
-      shouldSeed = true;
-    } finally {
-      await existingDb?.close();
-    }
-  }
+  const existingStats = await readDatabaseStats(DB_PATH);
+  const seedStats = await readDatabaseStats(SEED_DB_PATH);
+  const shouldSeed = !existingStats.exists
+    || !existingStats.hasDocumentsTable
+    || existingStats.deliveries === 0
+    || seedStats.deliveries > existingStats.deliveries;
 
   if (shouldSeed) {
+    backupDatabase(DB_PATH);
+    removeSqliteSidecarFiles(DB_PATH);
     fs.copyFileSync(SEED_DB_PATH, DB_PATH);
-    console.log(`Seeded SQLite database from ${SEED_DB_PATH}`);
+    console.log(
+      `Seeded SQLite database from ${SEED_DB_PATH} ` +
+      `(deliveries ${existingStats.deliveries} -> ${seedStats.deliveries})`,
+    );
   }
 }
 
