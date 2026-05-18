@@ -471,7 +471,11 @@ app.post('/api/auth/users', requireAuth, async (req, res) => {
   await db.run(
     `INSERT INTO local_users (email, name, password_hash, salt, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(email) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at`,
+     ON CONFLICT(email) DO UPDATE SET
+      name = excluded.name,
+      password_hash = excluded.password_hash,
+      salt = excluded.salt,
+      updated_at = excluded.updated_at`,
     email,
     req.body.name || email,
     hash,
